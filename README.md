@@ -106,7 +106,7 @@ Open [http://localhost:8080](http://localhost:8080) in your browser. Choose eith
 
 This project includes a Dockerfile configured for deployment on containerized platforms like **Docploy**.
 
-For live deployment IDs, dashboard links, and redeploy commands, see [docs/dokploy.md](docs/dokploy.md).
+For live deployment IDs, dashboard links, and redeploy commands, see [docs/dokploy.md](docs/dokploy.md). AI agents should use the `dokploy-mcp` MCP server when present (see that doc).
 
 ### Deployment Steps on Docploy:
 

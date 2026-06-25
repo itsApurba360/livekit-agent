@@ -4,6 +4,46 @@ This file records non-secret deployment metadata so future sessions (human or AI
 
 **Do not commit API keys or `.env` values here.**
 
+## For AI agents — use MCP first
+
+**If the `dokploy-mcp` MCP server is available in this workspace, use it for all Dokploy operations.** Do not ask the user for the API key or fall back to raw `curl` unless MCP is missing or failing.
+
+MCP is configured locally in `.cursor/mcp.json` (gitignored). After opening this project in Cursor, check whether `dokploy-mcp` tools are listed in the session. If they are, prefer MCP.
+
+### MCP-first workflow
+
+1. **Discover** — `project-all` or `application-one` (with `applicationId` below) to confirm current state.
+2. **Deploy** — `application-deploy` with `applicationId: vBCXzDVrjNT175I1RZgHV`. Call **once** per release.
+3. **Check status** — `application-one` or `deployment-all`.
+4. **Containers** — `docker-getContainersByAppNameMatch` with `appName: livekit-agent`.
+5. **Cleanup** — `docker-removeContainer` for exited containers; `settings-cleanStoppedContainers` / `settings-cleanUnusedImages` if needed.
+6. **Env vars** — `application-saveEnvironment` when updating secrets (read values from local `.env`, never commit them).
+
+### When MCP is not present
+
+Fall back to the IDs and `curl` examples in this file, or ask the user for `DOKPLOY_URL` and `DOKPLOY_API_KEY` once.
+
+### MCP setup (if missing)
+
+Create `.cursor/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "dokploy-mcp": {
+      "command": "npx",
+      "args": ["-y", "@dokploy/mcp"],
+      "env": {
+        "DOKPLOY_URL": "http://173.212.216.156:3000",
+        "DOKPLOY_API_KEY": "<your-api-key>"
+      }
+    }
+  }
+}
+```
+
+Reload Cursor after adding. Optional: limit tools with `DOKPLOY_ENABLED_TAGS=project,application,deployment,docker,settings`.
+
 ## Server
 
 | Setting | Value |
@@ -59,6 +99,8 @@ Voice/model settings are in `agent_config.json` (committed). Current OpenAI setu
 
 ## Deploy Workflow
 
+> **AI agents:** Use MCP tools above when `dokploy-mcp` is available. The steps below are the human / no-MCP fallback.
+
 ### Standard (code/config change)
 
 ```bash
@@ -99,28 +141,9 @@ curl -G \
   "http://173.212.216.156:3000/api/docker.getContainersByAppNameMatch"
 ```
 
-## Cursor / MCP Setup
-
-Local file: `.cursor/mcp.json` (gitignored — contains secrets)
-
-```json
-{
-  "mcpServers": {
-    "dokploy-mcp": {
-      "command": "npx",
-      "args": ["-y", "@dokploy/mcp"],
-      "env": {
-        "DOKPLOY_URL": "http://173.212.216.156:3000",
-        "DOKPLOY_API_KEY": "<your-api-key>"
-      }
-    }
-  }
-}
-```
-
-With MCP enabled, an agent can discover projects/apps via API tools instead of reading this file.
-
 ## Cleanup After Redeploys
+
+> **AI agents:** Prefer `docker-removeContainer`, `settings-cleanStoppedContainers`, and `settings-cleanUnusedImages` via MCP when available.
 
 Docker Swarm leaves stopped containers after redeploys. To clean up:
 

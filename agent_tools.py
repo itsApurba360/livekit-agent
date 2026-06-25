@@ -12,7 +12,7 @@ class CustomerQueryTools(llm.ToolContext):
     A standalone LLM ToolContext that implements all customer information lookup
     and WhatsApp OTP/PDF sending logic using a remote Frappe REST client instead of local ORM imports.
     """
-    def __init__(self, client: FrappeRestClient, customer_id: Optional[str] = None, phone_number: Optional[str] = None, on_verify_success: Optional[Callable] = None, session: Optional[Any] = None, room: Optional[Any] = None):
+    def __init__(self, client: FrappeRestClient, customer_id: Optional[str] = None, phone_number: Optional[str] = None, on_verify_success: Optional[Callable] = None, session: Optional[Any] = None):
         super().__init__(tools=[])
         self.client = client
         self.customer_id = customer_id
@@ -22,7 +22,6 @@ class CustomerQueryTools(llm.ToolContext):
         self.dtmf_buffer = ""
         self.on_verify_success = on_verify_success
         self.session = session
-        self.room = room
 
     @llm.function_tool(description="Get the list and status of sales orders for the current customer.")
     async def get_customer_sales_orders(self, customer_id: Optional[str] = None):
@@ -439,25 +438,3 @@ class CustomerQueryTools(llm.ToolContext):
         except Exception as e:
             logger.error(f"Error in send_text_whatsapp: {e}")
             return f"Error sending WhatsApp message: {str(e)}"
-
-    @llm.function_tool(description="Terminate / hang up the current voice call when the conversation is finished or if the customer requests to end the call.")
-    async def terminate_call(self):
-        """
-        Call this tool when the conversation is completed (e.g. after saying goodbye or thank you) or if the customer wants to hang up.
-        """
-        logger.info("Agent requested call termination.")
-        if self.room:
-            import asyncio
-            async def disconnect_later():
-                await asyncio.sleep(2.0)  # Allow final goodbye speech to finish playing
-                try:
-                    await self.room.disconnect()
-                    logger.info("Call disconnected successfully via agent tool.")
-                except Exception as e:
-                    logger.error(f"Error disconnecting room in terminate_call: {e}")
-            
-            asyncio.create_task(disconnect_later())
-            return "Call termination initiated. Saying goodbye."
-        else:
-            logger.warning("terminate_call invoked but no room context is set.")
-            return "Cannot disconnect call: Room context not available."

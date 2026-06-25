@@ -10,6 +10,7 @@ import json
 from dotenv import load_dotenv
 from livekit import agents, api
 from livekit.agents import AgentSession, Agent, RoomInputOptions
+from livekit.agents.beta.tools import EndCallTool
 from livekit.plugins import openai, google, noise_cancellation
 from typing import Optional
 
@@ -233,8 +234,7 @@ async def entrypoint(ctx: agents.JobContext):
         client=client,
         customer_id=customer_id,
         phone_number=phone_number,
-        on_verify_success=on_verification_success,
-        room=ctx.room
+        on_verify_success=on_verification_success
     )
 
     # Initialize Realtime AI models
@@ -258,8 +258,15 @@ async def entrypoint(ctx: agents.JobContext):
     session = AgentSession(llm=realtime_llm)
     fnc_ctx.session = session
 
+    # Initialize prebuilt call termination tool
+    end_call_tool = EndCallTool(
+        delete_room=True,
+        end_instructions="Politely say goodbye to the user in simple Hindi/Hinglish (e.g., 'अलविदा, धन्यवाद!')"
+    )
+    agent_tools = list(fnc_ctx.function_tools.values()) + list(end_call_tool.tools)
+
     # Start LiveKit Agent Session
-    agent_instance = StandaloneAgent(instructions=system_prompt, tools=list(fnc_ctx.function_tools.values()))
+    agent_instance = StandaloneAgent(instructions=system_prompt, tools=agent_tools)
     await session.start(
         room=ctx.room,
         agent=agent_instance,

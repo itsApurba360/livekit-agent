@@ -106,6 +106,8 @@ Open [http://localhost:8080](http://localhost:8080) in your browser. Choose eith
 
 This project includes a Dockerfile configured for deployment on containerized platforms like **Docploy**.
 
+For live deployment IDs, dashboard links, and redeploy commands, see [docs/dokploy.md](docs/dokploy.md).
+
 ### Deployment Steps on Docploy:
 
 1. **Create a New Application**: Select Dockerfile deployment in Docploy.

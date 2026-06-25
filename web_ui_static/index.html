@@ -1,0 +1,908 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LiveKit Real-Time Agent Tester</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;700&display=swap" rel="stylesheet">
+    <!-- LiveKit Client SDK -->
+    <script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
+    <style>
+        :root {
+            --bg-color: #0c0817;
+            --card-bg: rgba(20, 16, 36, 0.6);
+            --card-border: rgba(255, 255, 255, 0.08);
+            --text-primary: #f3f4f6;
+            --text-secondary: #9ca3af;
+            --primary-glow: linear-gradient(135deg, #6366f1 0%, #a855f7 100%);
+            --agent-glow: linear-gradient(135deg, #06b6d4 0%, #8b5cf6 100%);
+            --user-glow: linear-gradient(135deg, #10b981 0%, #3b82f6 100%);
+            --danger-glow: linear-gradient(135deg, #ef4444 0%, #f97316 100%);
+            --font-main: 'Outfit', sans-serif;
+            --font-mono: 'Space Grotesk', monospace;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            background-image: 
+                radial-gradient(circle at 10% 20%, rgba(99, 102, 241, 0.15) 0%, transparent 40%),
+                radial-gradient(circle at 90% 80%, rgba(168, 85, 247, 0.15) 0%, transparent 40%);
+            color: var(--text-primary);
+            font-family: var(--font-main);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow-x: hidden;
+        }
+
+        header {
+            padding: 2rem 4rem 1rem 4rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(12px);
+        }
+
+        .logo-section h1 {
+            font-family: var(--font-mono);
+            font-size: 1.5rem;
+            font-weight: 700;
+            letter-spacing: -0.05em;
+            background: linear-gradient(90deg, #818cf8, #c084fc);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .logo-section p {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            margin-top: 0.2rem;
+        }
+
+        .badge {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 0.4rem 0.8rem;
+            border-radius: 9999px;
+            font-size: 0.8rem;
+            font-weight: 500;
+            border: 1px solid var(--card-border);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .badge-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background-color: #6b7280;
+        }
+
+        .badge-dot.connected {
+            background-color: #10b981;
+            box-shadow: 0 0 8px #10b981;
+        }
+
+        .main-container {
+            display: grid;
+            grid-template-columns: 380px 1fr;
+            gap: 2rem;
+            padding: 2rem 4rem;
+            flex: 1;
+            max-width: 1600px;
+            margin: 0 auto;
+            width: 100%;
+        }
+
+        .glass-panel {
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 20px;
+            backdrop-filter: blur(16px);
+            padding: 2rem;
+            display: flex;
+            flex-direction: column;
+            gap: 1.5rem;
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
+        }
+
+        .panel-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            border-left: 3px solid #818cf8;
+            padding-left: 0.75rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .form-group {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        .form-group label {
+            font-size: 0.85rem;
+            font-weight: 500;
+            color: var(--text-secondary);
+        }
+
+        .input-control, .select-control {
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            color: var(--text-primary);
+            padding: 0.75rem 1rem;
+            font-family: var(--font-main);
+            font-size: 0.95rem;
+            transition: all 0.2s ease;
+            width: 100%;
+        }
+
+        .input-control:focus, .select-control:focus {
+            border-color: #818cf8;
+            outline: none;
+            box-shadow: 0 0 10px rgba(129, 140, 248, 0.15);
+        }
+
+        .profile-selector {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 0.5rem;
+        }
+
+        .profile-btn {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 8px;
+            color: var(--text-secondary);
+            cursor: pointer;
+            padding: 0.6rem 0.4rem;
+            font-size: 0.8rem;
+            font-weight: 500;
+            text-align: center;
+            transition: all 0.2s ease;
+        }
+
+        .profile-btn:hover {
+            background: rgba(255, 255, 255, 0.07);
+            color: var(--text-primary);
+        }
+
+        .profile-btn.active {
+            background: #818cf8;
+            border-color: #818cf8;
+            color: #ffffff;
+            box-shadow: 0 4px 12px rgba(129, 140, 248, 0.3);
+        }
+
+        .connect-btn {
+            background: var(--primary-glow);
+            border: none;
+            border-radius: 12px;
+            color: #ffffff;
+            cursor: pointer;
+            font-family: var(--font-main);
+            font-size: 1rem;
+            font-weight: 600;
+            padding: 1rem;
+            text-align: center;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 20px rgba(168, 85, 247, 0.2);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .connect-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 24px rgba(168, 85, 247, 0.35);
+        }
+
+        .connect-btn:active {
+            transform: translateY(0);
+        }
+
+        .connect-btn.disconnect {
+            background: var(--danger-glow);
+            box-shadow: 0 4px 20px rgba(239, 68, 68, 0.2);
+        }
+
+        .connect-btn.disconnect:hover {
+            box-shadow: 0 6px 24px rgba(239, 68, 68, 0.35);
+        }
+
+        .main-display {
+            display: grid;
+            grid-template-rows: 1fr 220px;
+            gap: 2rem;
+        }
+
+        .visualizer-container {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            position: relative;
+            min-height: 380px;
+        }
+
+        /* Pulsing Visualizer Circle */
+        .visualizer-circle-outer {
+            width: 260px;
+            height: 260px;
+            border-radius: 50%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            position: relative;
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            transition: all 0.1s ease;
+        }
+
+        .visualizer-circle-inner {
+            width: 180px;
+            height: 180px;
+            border-radius: 50%;
+            background: radial-gradient(circle, #1d1b38 0%, #0d0b1a 100%);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            position: relative;
+            z-index: 2;
+            box-shadow: 0 0 30px rgba(129, 140, 248, 0.05);
+            transition: all 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        }
+
+        .visualizer-circle-inner::before {
+            content: '';
+            position: absolute;
+            inset: -4px;
+            border-radius: 50%;
+            background: var(--primary-glow);
+            z-index: -1;
+            opacity: 0.15;
+            transition: all 0.3s ease;
+        }
+
+        .visualizer-circle-inner.agent-speaking::before {
+            background: var(--agent-glow);
+            opacity: 0.8;
+        }
+
+        .visualizer-circle-inner.user-speaking::before {
+            background: var(--user-glow);
+            opacity: 0.8;
+        }
+
+        .visualizer-circle-inner.connecting::before {
+            animation: spin 3s linear infinite;
+            opacity: 0.6;
+        }
+
+        .visualizer-status {
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 0.15em;
+            color: var(--text-secondary);
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+        }
+
+        .visualizer-avatar {
+            width: 70px;
+            height: 70px;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.05);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-size: 1.8rem;
+            margin-bottom: 0.5rem;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            transition: all 0.3s ease;
+        }
+
+        .visualizer-circle-inner.agent-speaking .visualizer-avatar {
+            background: rgba(6, 182, 212, 0.15);
+            border-color: rgba(6, 182, 212, 0.3);
+            transform: scale(1.05);
+        }
+
+        .visualizer-name {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        /* Concentric Rings for sound waves */
+        .ring {
+            position: absolute;
+            border-radius: 50%;
+            border: 2px solid rgba(129, 140, 248, 0.1);
+            inset: -10px;
+            animation: ripple 2s cubic-bezier(0.1, 0.8, 0.3, 1) infinite;
+            opacity: 0;
+            pointer-events: none;
+            z-index: 1;
+        }
+
+        .ring:nth-child(2) {
+            animation-delay: 0.6s;
+        }
+
+        .ring:nth-child(3) {
+            animation-delay: 1.2s;
+        }
+
+        .visualizer-circle-inner.agent-speaking ~ .ring {
+            border-color: rgba(6, 182, 212, 0.2);
+        }
+
+        .visualizer-circle-inner.user-speaking ~ .ring {
+            border-color: rgba(16, 185, 129, 0.2);
+        }
+
+        @keyframes ripple {
+            0% {
+                transform: scale(0.95);
+                opacity: 0.8;
+            }
+            100% {
+                transform: scale(1.6);
+                opacity: 0;
+            }
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .terminal-panel {
+            font-family: var(--font-mono);
+            font-size: 0.85rem;
+            padding: 1.25rem;
+            background: rgba(0, 0, 0, 0.5);
+            border: 1px solid var(--card-border);
+            border-radius: 14px;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            height: 100%;
+        }
+
+        .terminal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+            padding-bottom: 0.5rem;
+            color: var(--text-secondary);
+            font-size: 0.75rem;
+            font-weight: bold;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .terminal-logs {
+            flex: 1;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 0.35rem;
+            padding-right: 0.5rem;
+        }
+
+        .log-entry {
+            line-height: 1.4;
+            word-break: break-all;
+        }
+
+        .log-time {
+            color: #6366f1;
+            margin-right: 0.5rem;
+        }
+
+        .log-info { color: #f3f4f6; }
+        .log-agent { color: #22d3ee; font-weight: 500; }
+        .log-user { color: #34d399; font-weight: 500; }
+        .log-warning { color: #f59e0b; }
+        .log-error { color: #f87171; }
+        .log-success { color: #10b981; }
+
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar {
+            width: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: rgba(255, 255, 255, 0.01);
+        }
+        ::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+
+        .caller-card {
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            padding: 1rem;
+            margin-top: 0.5rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            transition: all 0.3s ease;
+        }
+
+        .caller-card-header {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-secondary);
+        }
+
+        .caller-card-value {
+            font-size: 0.95rem;
+            font-weight: 600;
+        }
+
+        .caller-info-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0.5rem;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="logo-section">
+            <h1>SUPPORT 360I</h1>
+            <p>Voice AI Agent Local Sandbox</p>
+        </div>
+        <div class="badge">
+            <span class="badge-dot" id="status-dot"></span>
+            <span id="status-text">Disconnected</span>
+        </div>
+    </header>
+
+    <main class="main-container">
+        <!-- Sidebar Setup Form -->
+        <section class="glass-panel">
+            <div>
+                <h2 class="panel-title">Tester Settings</h2>
+                <p style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 1rem;">
+                    Configure who is calling. The agent performs a REST lookup using this identity.
+                </p>
+            </div>
+
+            <!-- Profile Switcher -->
+            <div class="form-group">
+                <label>Call Scenario Profile</label>
+                <div class="profile-selector">
+                    <button class="profile-btn active" id="profile-support" onclick="selectProfile('support')">Customer</button>
+                    <button class="profile-btn" id="profile-sales" onclick="selectProfile('sales')">Sales Lead</button>
+                    <button class="profile-btn" id="profile-custom" onclick="selectProfile('custom')">Custom</button>
+                </div>
+            </div>
+
+            <!-- Identity Inputs -->
+            <div class="form-group">
+                <label for="phone_number">Caller Phone Number</label>
+                <input type="text" class="input-control" id="phone_number" value="9062371141">
+            </div>
+
+            <div class="form-group">
+                <label for="participant_name">Your Name</label>
+                <input type="text" class="input-control" id="participant_name" value="Lokesh Associates">
+            </div>
+
+            <!-- Audio Input Device Selector -->
+            <div class="form-group">
+                <label for="mic-select">Microphone Device</label>
+                <select class="select-control" id="mic-select">
+                    <option value="">Default Microphone</option>
+                </select>
+            </div>
+
+            <div class="form-group" style="margin-top: auto;">
+                <button class="connect-btn" id="action-btn" onclick="toggleConnection()">
+                    <svg style="width: 20px; height: 20px;" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M19.114 5.636a9 9 0 010 12.728M16.463 8.288a5.25 5.25 0 010 7.424M6.75 8.25l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z" />
+                    </svg>
+                    <span>Connect & Start Call</span>
+                </button>
+            </div>
+        </section>
+
+        <!-- Main Display Panel -->
+        <section class="main-display">
+            <!-- Visualizer Card -->
+            <div class="glass-panel visualizer-container">
+                <div class="ring"></div>
+                <div class="ring"></div>
+                <div class="ring"></div>
+                <div class="visualizer-circle-outer" id="v-outer">
+                    <div class="visualizer-circle-inner" id="v-inner">
+                        <div class="visualizer-status" id="v-status">OFFLINE</div>
+                        <div class="visualizer-avatar" id="v-avatar">🎙️</div>
+                        <div class="visualizer-name" id="v-name">Call Tester</div>
+                    </div>
+                </div>
+
+                <!-- Caller Metadata Panel -->
+                <div class="caller-card" style="width: 320px; margin-top: 2rem;">
+                    <div class="caller-card-header">Resolved Caller Lookup Info</div>
+                    <div class="caller-info-grid">
+                        <div>
+                            <span style="font-size: 0.75rem; color: var(--text-secondary);">Expected Agent:</span>
+                            <div class="caller-card-value" id="expected-agent">Kavya (Support)</div>
+                        </div>
+                        <div>
+                            <span style="font-size: 0.75rem; color: var(--text-secondary);">Target Entity:</span>
+                            <div class="caller-card-value" id="expected-entity">Customer DB</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Terminal Event Logs -->
+            <div class="terminal-panel">
+                <div class="terminal-header">
+                    <span>Connection Console Logs</span>
+                    <span id="log-counter" style="color: var(--text-secondary);">0 events</span>
+                </div>
+                <div class="terminal-logs" id="console-logs">
+                    <div class="log-entry">
+                        <span class="log-time">[System]</span>
+                        <span class="log-info">Console initialized. Select a profile and click "Connect & Start Call" to begin testing.</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <script>
+        let currentRoom = null;
+        let activeSpeakers = new Set();
+        let audioLevelInterval = null;
+        let logIndex = 1;
+
+        // Profiles Config
+        const PROFILES = {
+            support: {
+                phone: "9062371141",
+                name: "Lokesh Associates",
+                agent: "Kavya (Support)",
+                entity: "Customer DB"
+            },
+            sales: {
+                phone: "9876543210",
+                name: "John Doe",
+                agent: "Nandini (Sales)",
+                entity: "Lead DB"
+            },
+            custom: {
+                phone: "",
+                name: "",
+                agent: "Auto-detect",
+                entity: "Frappe Lookup"
+            }
+        };
+
+        // Initialize audio input choices
+        async function loadDevices() {
+            try {
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                const micSelect = document.getElementById('mic-select');
+                micSelect.innerHTML = '<option value="">Default Microphone</option>';
+                devices.forEach(device => {
+                    if (device.kind === 'audioinput') {
+                        const option = document.createElement('option');
+                        option.value = device.deviceId;
+                        option.text = device.label || `Microphone ${micSelect.length}`;
+                        micSelect.appendChild(option);
+                    }
+                });
+            } catch (err) {
+                logMessage("warning", `Could not enumerate audio devices: ${err.message}`);
+            }
+        }
+
+        // Run device loading on start
+        navigator.mediaDevices.addEventListener('devicechange', loadDevices);
+        loadDevices();
+
+        function selectProfile(type) {
+            // Update profile button classes
+            document.querySelectorAll('.profile-btn').forEach(btn => btn.classList.remove('active'));
+            document.getElementById(`profile-${type}`).classList.add('active');
+
+            const profile = PROFILES[type];
+            const phoneInput = document.getElementById('phone_number');
+            const nameInput = document.getElementById('participant_name');
+            const expectedAgent = document.getElementById('expected-agent');
+            const expectedEntity = document.getElementById('expected-entity');
+
+            phoneInput.value = profile.phone;
+            nameInput.value = profile.name;
+            expectedAgent.textContent = profile.agent;
+            expectedEntity.textContent = profile.entity;
+
+            if (type === 'custom') {
+                phoneInput.focus();
+                phoneInput.removeAttribute('readonly');
+                nameInput.removeAttribute('readonly');
+            } else {
+                phoneInput.setAttribute('readonly', true);
+                nameInput.setAttribute('readonly', true);
+            }
+            logMessage("info", `Switched profile to: ${type.toUpperCase()}`);
+        }
+
+        // Prevent typing into Customer/Sales pre-defined fields by default
+        document.getElementById('phone_number').setAttribute('readonly', true);
+        document.getElementById('participant_name').setAttribute('readonly', true);
+
+        function logMessage(type, message) {
+            const container = document.getElementById('console-logs');
+            const entry = document.createElement('div');
+            entry.className = 'log-entry';
+
+            const now = new Date();
+            const timeStr = now.toTimeString().split(' ')[0];
+
+            entry.innerHTML = `<span class="log-time">[${timeStr}]</span> <span class="log-${type}">${message}</span>`;
+            container.appendChild(entry);
+            container.scrollTop = container.scrollHeight;
+
+            document.getElementById('log-counter').textContent = `${logIndex++} events`;
+        }
+
+        async function toggleConnection() {
+            const btn = document.getElementById('action-btn');
+            if (currentRoom && currentRoom.state === 'connected') {
+                logMessage("info", "Disconnecting from call...");
+                await disconnect();
+            } else {
+                await connect();
+            }
+        }
+
+        async function connect() {
+            const phoneInput = document.getElementById('phone_number').value.trim();
+            const nameInput = document.getElementById('participant_name').value.trim() || 'Web Tester';
+            const micDeviceId = document.getElementById('mic-select').value;
+
+            if (!phoneInput || !phoneInput.match(/^\d+$/)) {
+                logMessage("error", "Please provide a valid numeric caller phone number.");
+                alert("Please enter a numeric phone number!");
+                return;
+            }
+
+            const btn = document.getElementById('action-btn');
+            const vInner = document.getElementById('v-inner');
+            const vStatus = document.getElementById('v-status');
+            const statusDot = document.getElementById('status-dot');
+            const statusText = document.getElementById('status-text');
+
+            btn.disabled = true;
+            btn.innerHTML = 'Connecting...';
+            vStatus.textContent = 'CONNECTING';
+            vInner.className = 'visualizer-circle-inner connecting';
+
+            // Generate room name starting with phone number so agent parses it
+            const roomName = `${phoneInput}_web_test`;
+
+            logMessage("info", `Fetching access token for room "${roomName}"...`);
+
+            try {
+                const response = await fetch('/api/token', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        room_name: roomName,
+                        participant_identity: `web_${phoneInput}`,
+                        participant_name: nameInput
+                    })
+                });
+
+                if (!response.ok) {
+                    const errData = await response.json();
+                    throw new Error(errData.error || 'Failed to fetch token');
+                }
+
+                const data = await response.json();
+                logMessage("success", "Token generated successfully.");
+                logMessage("info", `LiveKit Cloud URL: ${data.server_url}`);
+
+                // Initialize LiveKit Room
+                currentRoom = new LivekitClient.Room({
+                    adaptiveStream: true,
+                    dynacast: true,
+                    publishDefaults: {
+                        audioPreset: LivekitClient.AudioPresets.speech,
+                    }
+                });
+
+                // Listen to room events
+                currentRoom.on(LivekitClient.RoomEvent.Connected, () => {
+                    logMessage("success", "Connected to LiveKit room!");
+                    vStatus.textContent = 'CONNECTED';
+                    statusText.textContent = 'Connected';
+                    statusDot.className = 'badge-dot connected';
+                    btn.disabled = false;
+                    btn.classList.add('disconnect');
+                    btn.innerHTML = `
+                        <svg style="width: 20px; height: 20px;" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                        <span>End Call</span>
+                    `;
+                });
+
+                currentRoom.on(LivekitClient.RoomEvent.Disconnected, (reason) => {
+                    logMessage("warning", `Disconnected from room: ${reason || 'Normal Disconnect'}`);
+                    cleanupUI();
+                });
+
+                currentRoom.on(LivekitClient.RoomEvent.ParticipantConnected, (participant) => {
+                    logMessage("success", `Agent / Remote Participant joined: ${participant.identity}`);
+                    document.getElementById('v-name').textContent = participant.name || 'Agent';
+                    document.getElementById('v-avatar').textContent = '🤖';
+                });
+
+                currentRoom.on(LivekitClient.RoomEvent.ParticipantDisconnected, (participant) => {
+                    logMessage("warning", `Remote Participant left: ${participant.identity}`);
+                    document.getElementById('v-name').textContent = 'Call Tester';
+                    document.getElementById('v-avatar').textContent = '🎙️';
+                });
+
+                currentRoom.on(LivekitClient.RoomEvent.TrackSubscribed, (track, publication, participant) => {
+                    if (track.kind === 'audio') {
+                        logMessage("info", `Subscribed to audio track from ${participant.identity}`);
+                        const element = track.attach();
+                        document.body.appendChild(element);
+                    }
+                });
+
+                currentRoom.on(LivekitClient.RoomEvent.TrackUnsubscribed, (track, publication, participant) => {
+                    if (track.kind === 'audio') {
+                        logMessage("info", `Unsubscribed from audio track of ${participant.identity}`);
+                        track.detach();
+                    }
+                });
+
+                // Connect to Room
+                await currentRoom.connect(data.server_url, data.token);
+
+                // Publish microphone
+                logMessage("info", "Requesting microphone access...");
+                const audioOptions = micDeviceId ? { deviceId: { exact: micDeviceId } } : true;
+                await currentRoom.localParticipant.setMicrophoneEnabled(true, typeof audioOptions === 'object' ? audioOptions : undefined);
+                logMessage("success", "Microphone published successfully.");
+
+                // Start active audio level monitor
+                startAudioMonitoring();
+
+            } catch (err) {
+                logMessage("error", `Connection failed: ${err.message}`);
+                cleanupUI();
+            }
+        }
+
+        async function disconnect() {
+            if (currentRoom) {
+                await currentRoom.disconnect();
+            }
+            cleanupUI();
+        }
+
+        function cleanupUI() {
+            currentRoom = null;
+            stopAudioMonitoring();
+
+            const btn = document.getElementById('action-btn');
+            btn.disabled = false;
+            btn.classList.remove('disconnect');
+            btn.innerHTML = `
+                <svg style="width: 20px; height: 20px;" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M19.114 5.636a9 9 0 010 12.728M16.463 8.288a5.25 5.25 0 010 7.424M6.75 8.25l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z" />
+                </svg>
+                <span>Connect & Start Call</span>
+            `;
+
+            const vInner = document.getElementById('v-inner');
+            const vStatus = document.getElementById('v-status');
+            const statusDot = document.getElementById('status-dot');
+            const statusText = document.getElementById('status-text');
+
+            vStatus.textContent = 'OFFLINE';
+            vInner.className = 'visualizer-circle-inner';
+            vInner.style.transform = 'scale(1)';
+            vInner.style.boxShadow = 'none';
+
+            statusText.textContent = 'Disconnected';
+            statusDot.className = 'badge-dot';
+            document.getElementById('v-name').textContent = 'Call Tester';
+            document.getElementById('v-avatar').textContent = '🎙️';
+        }
+
+        function startAudioMonitoring() {
+            const vInner = document.getElementById('v-inner');
+            const vOuter = document.getElementById('v-outer');
+
+            audioLevelInterval = setInterval(() => {
+                if (!currentRoom || currentRoom.state !== 'connected') return;
+
+                let maxAgentLevel = 0;
+                let agentSpeaking = false;
+                let agentName = 'Agent';
+
+                currentRoom.remoteParticipants.forEach(p => {
+                    if (p.audioLevel > maxAgentLevel) {
+                        maxAgentLevel = p.audioLevel;
+                    }
+                    if (p.isSpeaking) {
+                        agentSpeaking = true;
+                        agentName = p.name || 'Agent';
+                    }
+                });
+
+                const userLevel = currentRoom.localParticipant ? currentRoom.localParticipant.audioLevel : 0;
+                const userSpeaking = currentRoom.localParticipant ? currentRoom.localParticipant.isSpeaking : false;
+
+                // Priority: Display active speak state on visualizer
+                if (agentSpeaking && maxAgentLevel > 0.01) {
+                    vInner.className = 'visualizer-circle-inner agent-speaking';
+                    document.getElementById('v-status').textContent = 'SPEAKING';
+                    
+                    // Scale circle with audio level
+                    const scaleVal = 1 + (maxAgentLevel * 0.8);
+                    vInner.style.transform = `scale(${scaleVal})`;
+                    vInner.style.boxShadow = `0 0 ${20 + maxAgentLevel * 80}px rgba(6, 182, 212, ${0.4 + maxAgentLevel * 0.6})`;
+                    vOuter.style.borderColor = `rgba(6, 182, 212, ${0.1 + maxAgentLevel * 0.4})`;
+                } else if (userSpeaking && userLevel > 0.01) {
+                    vInner.className = 'visualizer-circle-inner user-speaking';
+                    document.getElementById('v-status').textContent = 'LISTENING';
+
+                    // Scale circle with local user level
+                    const scaleVal = 1 + (userLevel * 0.8);
+                    vInner.style.transform = `scale(${scaleVal})`;
+                    vInner.style.boxShadow = `0 0 ${20 + userLevel * 80}px rgba(16, 185, 129, ${0.4 + userLevel * 0.6})`;
+                    vOuter.style.borderColor = `rgba(16, 185, 129, ${0.1 + userLevel * 0.4})`;
+                } else {
+                    vInner.className = 'visualizer-circle-inner';
+                    document.getElementById('v-status').textContent = 'CONNECTED';
+                    vInner.style.transform = 'scale(1)';
+                    vInner.style.boxShadow = 'none';
+                    vOuter.style.borderColor = 'rgba(255, 255, 255, 0.05)';
+                }
+            }, 50);
+        }
+
+        function stopAudioMonitoring() {
+            if (audioLevelInterval) {
+                clearInterval(audioLevelInterval);
+                audioLevelInterval = null;
+            }
+        }
+    </script>
+</body>
+</html>

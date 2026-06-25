@@ -1,0 +1,877 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LiveKit Agent — Flow & Gap Analysis</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <style>
+    :root {
+      --bg: #0b0f17;
+      --surface: #121826;
+      --surface-2: #1a2234;
+      --border: rgba(255,255,255,0.08);
+      --text: #e8edf7;
+      --muted: #8b95a8;
+      --accent: #6366f1;
+      --accent-2: #22d3ee;
+      --ok: #34d399;
+      --partial: #fbbf24;
+      --gap: #f87171;
+      --extra: #a78bfa;
+      --shadow: 0 20px 50px rgba(0,0,0,0.35);
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: "DM Sans", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      min-height: 100vh;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      background:
+        radial-gradient(ellipse 80% 50% at 10% -10%, rgba(99,102,241,0.18), transparent),
+        radial-gradient(ellipse 60% 40% at 90% 10%, rgba(34,211,238,0.12), transparent),
+        radial-gradient(ellipse 50% 30% at 50% 100%, rgba(167,139,250,0.08), transparent);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .wrap {
+      position: relative;
+      z-index: 1;
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 2.5rem 1.5rem 4rem;
+    }
+
+    header {
+      margin-bottom: 2.5rem;
+      padding-bottom: 1.5rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    header h1 {
+      font-size: clamp(1.6rem, 4vw, 2.2rem);
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      background: linear-gradient(135deg, #a5b4fc, #67e8f9);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    header p {
+      color: var(--muted);
+      margin-top: 0.5rem;
+      max-width: 72ch;
+    }
+
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.6rem;
+      margin-top: 1rem;
+    }
+
+    .pill {
+      font-size: 0.78rem;
+      font-weight: 500;
+      padding: 0.35rem 0.75rem;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,0.03);
+      color: var(--muted);
+    }
+
+    nav.toc {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin-bottom: 2rem;
+    }
+
+    nav.toc a {
+      color: var(--muted);
+      text-decoration: none;
+      font-size: 0.85rem;
+      padding: 0.45rem 0.9rem;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      transition: color 0.15s, border-color 0.15s;
+    }
+
+    nav.toc a:hover {
+      color: var(--text);
+      border-color: rgba(99,102,241,0.4);
+    }
+
+    section {
+      margin-bottom: 2.5rem;
+    }
+
+    h2 {
+      font-size: 1.25rem;
+      font-weight: 600;
+      margin-bottom: 1rem;
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+    }
+
+    h2 .num {
+      font-family: "JetBrains Mono", monospace;
+      font-size: 0.75rem;
+      color: var(--accent-2);
+      background: rgba(34,211,238,0.1);
+      padding: 0.2rem 0.5rem;
+      border-radius: 6px;
+    }
+
+    h3 {
+      font-size: 1rem;
+      font-weight: 600;
+      margin: 1.25rem 0 0.75rem;
+      color: #c7d2fe;
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 1.25rem 1.5rem;
+      box-shadow: var(--shadow);
+    }
+
+    .card + .card { margin-top: 1rem; }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 1rem;
+    }
+
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 1rem;
+    }
+
+    .stat {
+      text-align: center;
+      padding: 1.25rem;
+    }
+
+    .stat .value {
+      font-size: 2rem;
+      font-weight: 700;
+      font-family: "JetBrains Mono", monospace;
+    }
+
+    .stat .label {
+      font-size: 0.82rem;
+      color: var(--muted);
+      margin-top: 0.25rem;
+    }
+
+    .stat.ok .value { color: var(--ok); }
+    .stat.partial .value { color: var(--partial); }
+    .stat.gap .value { color: var(--gap); }
+    .stat.extra .value { color: var(--extra); }
+
+    .mermaid {
+      background: var(--surface-2);
+      border-radius: 12px;
+      padding: 1rem;
+      overflow-x: auto;
+    }
+
+    .file-tree {
+      font-family: "JetBrains Mono", monospace;
+      font-size: 0.82rem;
+      line-height: 1.8;
+      color: var(--muted);
+    }
+
+    .file-tree .file { color: #a5b4fc; }
+    .file-tree .dir { color: #67e8f9; font-weight: 500; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.88rem;
+    }
+
+    th, td {
+      text-align: left;
+      padding: 0.75rem 1rem;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+
+    th {
+      color: var(--muted);
+      font-weight: 500;
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    tr:last-child td { border-bottom: none; }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      font-size: 0.72rem;
+      font-weight: 600;
+      padding: 0.25rem 0.55rem;
+      border-radius: 6px;
+      white-space: nowrap;
+    }
+
+    .badge::before {
+      content: "";
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+    }
+
+    .badge.done { background: rgba(52,211,153,0.15); color: var(--ok); }
+    .badge.done::before { background: var(--ok); }
+    .badge.partial { background: rgba(251,191,36,0.15); color: var(--partial); }
+    .badge.partial::before { background: var(--partial); }
+    .badge.missing { background: rgba(248,113,113,0.15); color: var(--gap); }
+    .badge.missing::before { background: var(--gap); }
+    .badge.extra { background: rgba(167,139,250,0.15); color: var(--extra); }
+    .badge.extra::before { background: var(--extra); }
+
+    code, .mono {
+      font-family: "JetBrains Mono", monospace;
+      font-size: 0.82em;
+      background: rgba(0,0,0,0.3);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+      color: #c4b5fd;
+    }
+
+    ul.compact {
+      padding-left: 1.2rem;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    ul.compact li { margin: 0.35rem 0; }
+
+    .flow-step {
+      display: flex;
+      gap: 1rem;
+      padding: 0.9rem 0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .flow-step:last-child { border-bottom: none; }
+
+    .flow-step .step-num {
+      flex-shrink: 0;
+      width: 2rem;
+      height: 2rem;
+      border-radius: 8px;
+      background: rgba(99,102,241,0.2);
+      color: #a5b4fc;
+      font-family: "JetBrains Mono", monospace;
+      font-size: 0.85rem;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .flow-step .step-body strong { color: var(--text); }
+    .flow-step .step-body p { color: var(--muted); font-size: 0.88rem; margin-top: 0.2rem; }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1rem;
+      margin-bottom: 1rem;
+      font-size: 0.82rem;
+      color: var(--muted);
+    }
+
+    .compare-cols {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+    }
+
+    @media (max-width: 768px) {
+      .compare-cols { grid-template-columns: 1fr; }
+    }
+
+    .compare-cols .col h4 {
+      font-size: 0.85rem;
+      color: var(--muted);
+      margin-bottom: 0.5rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .highlight-box {
+      border-left: 3px solid var(--gap);
+      background: rgba(248,113,113,0.06);
+      padding: 1rem 1.25rem;
+      border-radius: 0 10px 10px 0;
+      margin: 1rem 0;
+      font-size: 0.9rem;
+    }
+
+    .highlight-box.warn {
+      border-left-color: var(--partial);
+      background: rgba(251,191,36,0.06);
+    }
+
+    .highlight-box.ok {
+      border-left-color: var(--ok);
+      background: rgba(52,211,153,0.06);
+    }
+
+    footer {
+      margin-top: 3rem;
+      padding-top: 1.5rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.82rem;
+      color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>LiveKit Agent — System Flow & Migration Gap Analysis</h1>
+      <p>
+        Visual guide to how <code>livekit_agent</code> works today, compared against the target architecture in
+        <code>docs/migration/restructuring.md</code>. Use the sections below to understand call routing, security boundaries, and what still needs to be built.
+      </p>
+      <div class="meta">
+        <span class="pill">Repo: livekit_agent</span>
+        <span class="pill">Spec: restructuring.md</span>
+        <span class="pill">Generated: Jun 25, 2026</span>
+      </div>
+    </header>
+
+    <nav class="toc">
+      <a href="#summary">Summary</a>
+      <a href="#architecture">Architecture</a>
+      <a href="#call-flow">Call Flow</a>
+      <a href="#components">Components</a>
+      <a href="#security">Security Model</a>
+      <a href="#gaps">Gap Analysis</a>
+      <a href="#roadmap">Roadmap</a>
+    </nav>
+
+    <!-- SUMMARY -->
+    <section id="summary">
+      <h2><span class="num">01</span> Executive Summary</h2>
+      <div class="grid-3">
+        <div class="card stat ok"><div class="value">7</div><div class="label">Implemented</div></div>
+        <div class="card stat partial"><div class="value">5</div><div class="label">Partial</div></div>
+        <div class="card stat gap"><div class="value">6</div><div class="label">Missing / Divergent</div></div>
+      </div>
+
+      <div class="card" style="margin-top:1rem;">
+        <p style="color:var(--muted); font-size:0.92rem;">
+          The standalone <strong>livekit_agent</strong> repo successfully achieves <em>deployment decoupling</em> — it runs outside the Frappe bench, talks to ERPNext via REST, ships with Docker/uv, and includes a browser sandbox. Core verification mechanics (OTP, DTMF, Python-level PDF gate, in-place prompt mutation) are in place.
+        </p>
+        <div class="highlight-box warn" style="margin-top:1rem;">
+          <strong>Biggest architectural divergence:</strong> restructuring.md proposes a <em>hybrid gatekeeper</em> where registered customers can query balances/orders by voice <em>without</em> OTP, and OTP is only required for WhatsApp PDF delivery. The current code requires OTP for <em>all</em> customer data tools — matching the older integrated bench agent, not the new spec.
+        </div>
+        <div class="highlight-box" style="margin-top:0.75rem;">
+          <strong>Second major gap:</strong> The spec defines dedicated Frappe whitelisted endpoints (<code>check_caller_type</code>, <code>send_otp_whatsapp</code>, <code>get_agent_config</code>, <code>log_call_completion</code>). None exist on the Frappe side yet; the worker uses generic REST resource APIs and direct watoolx methods instead.
+        </div>
+      </div>
+    </section>
+
+    <!-- ARCHITECTURE -->
+    <section id="architecture">
+      <h2><span class="num">02</span> System Architecture (Current)</h2>
+      <div class="card">
+        <div class="mermaid">
+flowchart TB
+    subgraph Clients["Call Origins"]
+        PSTN["PSTN Caller via SIP Trunk"]
+        WEB["Browser Sandbox :8080"]
+    end
+
+    subgraph LK["LiveKit Cloud / Server"]
+        ROOM["Room + Agent Dispatch"]
+        SIP["SIP Participant sip_+91..."]
+    end
+
+    subgraph Worker["livekit_agent Worker"]
+        EP["agent.py entrypoint()"]
+        AGT["StandaloneAgent + AgentSession"]
+        TOOLS["agent_tools.CustomerQueryTools"]
+        FC["frappe_client.FrappeRestClient"]
+        CFG["agent_config.json"]
+    end
+
+    subgraph AI["Realtime LLM"]
+        GEM["Google Gemini Live"]
+        OAI["OpenAI Realtime"]
+    end
+
+    subgraph Frappe["Remote Frappe / ERPNext"]
+        RES["Generic REST /api/resource/*"]
+        WA["watoolx_whatsapp methods"]
+        PDF["print_format.download_pdf"]
+    end
+
+    PSTN --> SIP --> ROOM
+    WEB -->|"POST /api/token"| ROOM
+    ROOM -->|"WebSocket job dispatch"| EP
+    EP --> CFG
+    EP --> FC
+    EP --> AGT
+    AGT --> TOOLS
+    AGT --> GEM
+    AGT --> OAI
+    TOOLS --> FC
+    FC --> RES
+    FC --> WA
+    TOOLS --> PDF
+        </div>
+      </div>
+
+      <div class="grid-2" style="margin-top:1rem;">
+        <div class="card">
+          <h3>Repository Layout</h3>
+          <div class="file-tree">
+            <div><span class="dir">livekit_agent/</span></div>
+            <div>├── <span class="file">agent.py</span> — LiveKit worker entrypoint, routing, DTMF, prompts</div>
+            <div>├── <span class="file">agent_tools.py</span> — LLM function tools (OTP, queries, PDF)</div>
+            <div>├── <span class="file">frappe_client.py</span> — REST client + caller lookup</div>
+            <div>├── <span class="file">agent_config.json</span> — prompts, model, voice, greetings</div>
+            <div>├── <span class="file">web_ui_server.py</span> — local browser test harness</div>
+            <div>├── <span class="dir">web_ui_static/</span> — sandbox UI</div>
+            <div>├── <span class="dir">tests/</span> — unit + Frappe integration tests</div>
+            <div>├── <span class="file">Dockerfile</span> — container deploy (Docploy)</div>
+            <div>└── <span class="file">pyproject.toml</span> — isolated deps via uv</div>
+          </div>
+        </div>
+        <div class="card">
+          <h3>Runtime Dependencies</h3>
+          <ul class="compact">
+            <li><code>LIVEKIT_URL / API_KEY / API_SECRET</code> — worker ↔ LiveKit</li>
+            <li><code>FRAPPE_SITE_URL / API_KEY / API_SECRET</code> — worker ↔ ERPNext</li>
+            <li><code>GOOGLE_API_KEY</code> or <code>OPENAI_API_KEY</code> — realtime model</li>
+            <li><code>VOBIZ_SIP_DOMAIN</code>, <code>DEFAULT_TRANSFER_NUMBER</code> — telephony (env only, limited use in standalone)</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- CALL FLOW -->
+    <section id="call-flow">
+      <h2><span class="num">03</span> End-to-End Call Flow</h2>
+
+      <h3>Inbound PSTN Call</h3>
+      <div class="card">
+        <div class="mermaid">
+sequenceDiagram
+    autonumber
+    actor Caller as PSTN Customer
+    participant LK as LiveKit + SIP
+    participant EP as agent.py entrypoint
+    participant FC as FrappeRestClient
+    participant AGT as Kavya / Nandini Agent
+    participant TOOL as CustomerQueryTools
+
+    Caller->>LK: Dials inbound DID
+    LK->>EP: Dispatch job (room created)
+    EP->>EP: Wait for sip_+91... participant identity
+    EP->>FC: lookup_caller(phone) via REST resource queries
+    FC-->>EP: Customer | Lead | Unknown
+
+    alt status == Customer
+        EP->>AGT: Launch Support Agent (Kavya)
+    else Lead or Unknown
+        EP->>AGT: Launch Sales Agent (Nandini)
+    end
+
+    EP->>AGT: Compile system prompt + start AgentSession
+    AGT->>Caller: Initial greeting (Hindi)
+
+    Caller->>AGT: "What is my outstanding balance?"
+    Note over AGT,TOOL: CURRENT: OTP required for all queries<br/>SPEC: voice query allowed without OTP
+    AGT->>TOOL: send_verification_otp()
+    TOOL->>FC: watoolx send_custom_whatsapp_message
+    Caller->>AGT: Speaks OTP or DTMF keypad
+    AGT->>TOOL: verify_otp() → is_verified=True
+    EP->>AGT: on_verify_success() mutates system prompt in-place
+    AGT->>TOOL: get_customer_pending_amount()
+    TOOL->>FC: GET Sales Invoice list
+    AGT->>Caller: Speaks balance in Hindi
+        </div>
+      </div>
+
+      <h3>Web UI Sandbox (Local Dev)</h3>
+      <div class="card">
+        <div class="flow-step">
+          <div class="step-num">1</div>
+          <div class="step-body">
+            <strong>Start worker</strong>
+            <p><code>uv run agent.py start</code> — registers as <code>remote-agent-worker</code></p>
+          </div>
+        </div>
+        <div class="flow-step">
+          <div class="step-num">2</div>
+          <div class="step-body">
+            <strong>Start sandbox</strong>
+            <p><code>uv run web_ui_server.py</code> — serves UI at localhost:8080</p>
+          </div>
+        </div>
+        <div class="flow-step">
+          <div class="step-num">3</div>
+          <div class="step-body">
+            <strong>User picks profile</strong>
+            <p>Customer → room <code>{phone}_web_test</code> (Kavya) · Lead → different phone (Nandini)</p>
+          </div>
+        </div>
+        <div class="flow-step">
+          <div class="step-num">4</div>
+          <div class="step-body">
+            <strong>Token + agent dispatch</strong>
+            <p>POST <code>/api/token</code> embeds <code>phone_number</code> in room agent metadata → same entrypoint path as PSTN</p>
+          </div>
+        </div>
+        <div class="flow-step">
+          <div class="step-num">5</div>
+          <div class="step-body">
+            <strong>Browser WebRTC audio</strong>
+            <p>LiveKit client connects with mic; realtime conversation + tool calls execute identically</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- COMPONENTS -->
+    <section id="components">
+      <h2><span class="num">04</span> Component Responsibilities</h2>
+      <div class="card" style="overflow-x:auto;">
+        <table>
+          <thead>
+            <tr>
+              <th>Module</th>
+              <th>Responsibility</th>
+              <th>Key Functions</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>agent.py</code></td>
+              <td>Orchestrates every call: metadata parsing, caller ID extraction, agent selection, prompt compilation, session lifecycle, DTMF OTP handler, verification callback</td>
+              <td><code>entrypoint()</code>, <code>get_compiled_prompt()</code>, <code>on_verification_success()</code></td>
+            </tr>
+            <tr>
+              <td><code>frappe_client.py</code></td>
+              <td>Token-authenticated HTTP to Frappe. Generic CRUD on doctypes. Client-side caller matching across Customer, Contact Phone, Lead tables. WhatsApp via watoolx.</td>
+              <td><code>lookup_caller()</code>, <code>get_resource_list()</code>, <code>send_whatsapp_message()</code></td>
+            </tr>
+            <tr>
+              <td><code>agent_tools.py</code></td>
+              <td>LLM-callable tools. Enforces <code>is_verified</code> gate on queries + PDF. Generates OTP locally, verifies voice/DTMF input.</td>
+              <td>10 function tools: sales orders, invoices, OTP, PDF, search</td>
+            </tr>
+            <tr>
+              <td><code>agent_config.json</code></td>
+              <td>Static prompts, greetings, provider/model/voice. No remote fetch or cache.</td>
+              <td>Support (Kavya) + Sales (Nandini) personas</td>
+            </tr>
+            <tr>
+              <td><code>web_ui_server.py</code></td>
+              <td>Dev-only: issues LiveKit JWT with agent dispatch metadata for browser testing.</td>
+              <td><code>POST /api/token</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- SECURITY -->
+    <section id="security">
+      <h2><span class="num">05</span> Security & Verification Model</h2>
+
+      <div class="compare-cols">
+        <div class="card">
+          <h4>restructuring.md (Target)</h4>
+          <ul class="compact">
+            <li>Registered caller → voice queries <strong>without OTP</strong></li>
+            <li>WhatsApp PDF delivery → <strong>OTP required</strong></li>
+            <li>Python flag <code>is_verified</code> gates PDF tool only</li>
+            <li>Dedicated <code>send_otp_whatsapp</code> Frappe endpoint</li>
+            <li>In-place system prompt mutation (no history append)</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h4>livekit_agent (Current)</h4>
+          <ul class="compact">
+            <li>All customer data tools check <code>is_verified</code></li>
+            <li>Prompt rules force OTP before any balance/order query</li>
+            <li>PDF also gated by <code>is_verified</code> ✓</li>
+            <li>OTP sent via direct watoolx REST method</li>
+            <li>In-place prompt swap ✓ + extra one-time system note on verify</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:1rem;">
+        <div class="mermaid">
+flowchart LR
+    subgraph Spec["Target Hybrid Gatekeeper"]
+        VQ["Voice Query Tools"] -->|"registered number"| OK1["Allowed without OTP"]
+        PDF1["send_pdf_whatsapp"] -->|"is_verified?"| GATE1{"Python gate"}
+        GATE1 -->|false| BLOCK1["Block + ask OTP"]
+        GATE1 -->|true| SEND1["Send PDF"]
+    end
+
+    subgraph Current["Current Implementation"]
+        VQ2["All Query Tools"] -->|"is_verified?"| GATE2{"Python gate"}
+        GATE2 -->|false| BLOCK2["Block all queries"]
+        GATE2 -->|true| OK2["Allow queries"]
+        PDF2["send_pdf_whatsapp"] --> GATE2
+    end
+        </div>
+      </div>
+    </section>
+
+    <!-- GAP ANALYSIS -->
+    <section id="gaps">
+      <h2><span class="num">06</span> Comprehensive Gap Analysis</h2>
+
+      <div class="legend">
+        <span><span class="badge done">Done</span> Fully implemented</span>
+        <span><span class="badge partial">Partial</span> Started but incomplete or diverges</span>
+        <span><span class="badge missing">Missing</span> Not implemented</span>
+        <span><span class="badge extra">Extra</span> Beyond spec (bonus)</span>
+      </div>
+
+      <div class="card" style="overflow-x:auto;">
+        <table>
+          <thead>
+            <tr>
+              <th>Area</th>
+              <th>restructuring.md Requirement</th>
+              <th>Current State</th>
+              <th>Status</th>
+              <th>Impact / Notes</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>1. Separate deployment</strong></td>
+              <td>Worker outside Frappe bench; isolated deps; containerized</td>
+              <td>Standalone repo, <code>pyproject.toml</code>, Dockerfile, uv, no <code>import frappe</code></td>
+              <td><span class="badge done">Done</span></td>
+              <td>Core migration goal achieved. Deploy via Docploy with outbound WebSocket only.</td>
+            </tr>
+            <tr>
+              <td><strong>2. REST vs ORM</strong></td>
+              <td>All data access via secured REST, not direct DB</td>
+              <td><code>FrappeRestClient</code> uses <code>/api/resource/*</code> + watoolx methods</td>
+              <td><span class="badge partial">Partial</span></td>
+              <td>Works but uses broad resource API (least-privilege weaker than dedicated endpoints). API key needs wide read permissions.</td>
+            </tr>
+            <tr>
+              <td><strong>3. check_caller_type</strong></td>
+              <td><code>POST support_360ithub.livekit.check_caller_type</code></td>
+              <td>Client-side <code>lookup_caller()</code> with multiple REST list queries</td>
+              <td><span class="badge partial">Partial</span></td>
+              <td>Functionally similar output. No server-side endpoint; logic duplicated in worker; harder to optimize/cache.</td>
+            </tr>
+            <tr>
+              <td><strong>4. Hybrid gatekeeper</strong></td>
+              <td>Voice queries for matched customers without OTP; OTP only for WhatsApp PDF</td>
+              <td>All query tools + prompts require OTP first</td>
+              <td><span class="badge missing">Missing</span></td>
+              <td><strong>Critical divergence.</strong> Worse UX (OTP for "what's my balance?"). Matches old integrated agent, not new spec.</td>
+            </tr>
+            <tr>
+              <td><strong>5. send_otp_whatsapp</strong></td>
+              <td>Dedicated Frappe endpoint receives phone + OTP</td>
+              <td>Worker generates OTP locally; calls watoolx <code>send_custom_whatsapp_message</code> directly</td>
+              <td><span class="badge partial">Partial</span></td>
+              <td>Works end-to-end. OTP generation on worker side (not Frappe). No centralized OTP audit on server.</td>
+            </tr>
+            <tr>
+              <td><strong>6. Python PDF gate</strong></td>
+              <td><code>send_pdf_whatsapp</code> checks <code>is_verified</code> regardless of LLM</td>
+              <td>Implemented in <code>agent_tools.py</code></td>
+              <td><span class="badge done">Done</span></td>
+              <td>Prompt injection cannot bypass PDF send. Aligns with spec.</td>
+            </tr>
+            <tr>
+              <td><strong>7. DTMF verification</strong></td>
+              <td>Keypad entry as alternate OTP path</td>
+              <td><code>sip_dtmf_received</code> handler in <code>agent.py</code></td>
+              <td><span class="badge done">Done</span></td>
+              <td>4-digit buffer, triggers same <code>on_verification_success</code> callback.</td>
+            </tr>
+            <tr>
+              <td><strong>8. In-place prompt mutation</strong></td>
+              <td>Recompile CORE_PROMPT at index 0; don't rely on appended system messages</td>
+              <td><code>get_compiled_prompt(is_verified=True)</code> swaps first system message</td>
+              <td><span class="badge partial">Partial</span></td>
+              <td>Also appends one-time <code>[System Note: Verification successful...]</code> — spec prefers mutation only.</td>
+            </tr>
+            <tr>
+              <td><strong>9. Agent routing</strong></td>
+              <td>Customer → Kavya (Support); Lead/Unknown → Nandini (Sales)</td>
+              <td><code>caller_status == "Customer"</code> → Support else Sales</td>
+              <td><span class="badge done">Done</span></td>
+              <td>Matches spec Phase 1 identity routing.</td>
+            </tr>
+            <tr>
+              <td><strong>10. get_agent_config</strong></td>
+              <td>Fetch model/voice/greeting/custom_instructions from Frappe with TTL cache</td>
+              <td>Static <code>agent_config.json</code> + env API keys only</td>
+              <td><span class="badge missing">Missing</span></td>
+              <td>Business users can't change promos/models from Frappe Admin without redeploy.</td>
+            </tr>
+            <tr>
+              <td><strong>11. Hybrid config model</strong></td>
+              <td>Core safety in Git; business overrides from Frappe</td>
+              <td>Entire prompt + model config in JSON file</td>
+              <td><span class="badge partial">Partial</span></td>
+              <td>Safety rules are in code (<code>DEFAULT_SUPPORT_*_RULES</code>) but greetings/model not dynamic.</td>
+            </tr>
+            <tr>
+              <td><strong>12. On-demand tool data</strong></td>
+              <td>Don't preload invoice lists into prompt; use tools at runtime</td>
+              <td>Tools fetch live data; prompt only adds customer_id context</td>
+              <td><span class="badge done">Done</span></td>
+              <td>Aligns with spec section 6B.</td>
+            </tr>
+            <tr>
+              <td><strong>13. log_call_completion</strong></td>
+              <td>Create/update Support Call Log with transcript on call end</td>
+              <td>Not implemented in standalone worker</td>
+              <td><span class="badge missing">Missing</span></td>
+              <td>Integrated agent auto-creates Support Call Log on inbound; standalone has no call logging lifecycle.</td>
+            </tr>
+            <tr>
+              <td><strong>14. Outbound dialing</strong></td>
+              <td>Implied in production (sales follow-up calls)</td>
+              <td>Comment mentions outbound; no dial-out logic. Relies on Frappe <code>initiate_agent_outbound_call</code> in integrated app</td>
+              <td><span class="badge missing">Missing</span></td>
+              <td>Outbound room detection exists (<code>agent_call_*</code>) but no SIP dial, no call log creation, no metadata from Frappe.</td>
+            </tr>
+            <tr>
+              <td><strong>15. Call transfer / recording</strong></td>
+              <td>Not in restructuring doc</td>
+              <td>Integrated app has Vobiz sync, recording download — absent here</td>
+              <td><span class="badge missing">Missing</span></td>
+              <td>Regression vs integrated deployment for ops features.</td>
+            </tr>
+            <tr>
+              <td><strong>16. Web UI sandbox</strong></td>
+              <td>Not specified</td>
+              <td><code>web_ui_server.py</code> + polished static UI</td>
+              <td><span class="badge extra">Extra</span></td>
+              <td>Valuable for local prompt/tool testing without PSTN.</td>
+            </tr>
+            <tr>
+              <td><strong>17. Test coverage</strong></td>
+              <td>Not specified</td>
+              <td>Unit tests + optional live Frappe integration tests</td>
+              <td><span class="badge extra">Extra</span></td>
+              <td><code>tests/test_agent_tools.py</code>, <code>test_frappe_connection.py</code>, etc.</td>
+            </tr>
+            <tr>
+              <td><strong>18. Frappe endpoint module</strong></td>
+              <td>New whitelisted methods under <code>support_360ithub.livekit</code></td>
+              <td>Existing module has outbound worker control, Vobiz sync — not the 4 new endpoints</td>
+              <td><span class="badge missing">Missing</span></td>
+              <td>Both worker and Frappe app need coordinated API layer work.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ROADMAP -->
+    <section id="roadmap">
+      <h2><span class="num">07</span> Suggested Migration Roadmap</h2>
+      <div class="card">
+        <div class="mermaid">
+gantt
+    title Gap Closure Priority
+    dateFormat YYYY-MM-DD
+    axisFormat %b %d
+
+    section P0 Security UX
+    Implement hybrid gatekeeper (voice free, PDF gated)     :p0a, 2026-06-26, 3d
+    Align prompt rules with new tool gates                   :p0b, after p0a, 2d
+
+    section P1 Frappe APIs
+    Add check_caller_type endpoint on Frappe                 :p1a, 2026-06-26, 2d
+    Add send_otp_whatsapp + server-side OTP audit            :p1b, after p1a, 2d
+    Add get_agent_config with cache on worker                :p1c, after p1b, 3d
+    Add log_call_completion on call disconnect               :p1d, after p1c, 2d
+
+    section P2 Parity
+    Outbound call metadata + Support Call Log                :p2a, after p1d, 4d
+    Narrow API key permissions (drop broad resource access)  :p2b, after p2a, 3d
+
+    section P3 Ops
+    Vobiz sync / recording (if needed)                       :p3a, after p2b, 5d
+        </div>
+      </div>
+
+      <div class="grid-2" style="margin-top:1rem;">
+        <div class="card highlight-box ok">
+          <strong>Quick win — Hybrid gatekeeper</strong><br/>
+          Remove <code>is_verified</code> checks from read-only query tools when <code>customer_id</code> is linked to the inbound phone match. Keep gate only on <code>send_pdf_whatsapp</code>. Update <code>DEFAULT_SUPPORT_UNVERIFIED_RULES</code> to only mention OTP for WhatsApp delivery.
+        </div>
+        <div class="card highlight-box warn">
+          <strong>Coordinated change — Frappe API layer</strong><br/>
+          Add the four whitelisted methods in <code>support_360ithub/livekit.py</code>, then refactor <code>frappe_client.py</code> to call them instead of raw resource endpoints. Enables least-privilege API keys and server-side OTP logging.
+        </div>
+      </div>
+    </section>
+
+    <footer>
+      Open this file in a browser: <code>livekit_agent/docs/architecture_flow_and_gaps.html</code><br/>
+      Source spec: <code>docs/migration/restructuring.md</code> · Implementation: <code>livekit_agent/</code>
+    </footer>
+  </div>
+
+  <script>
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: "dark",
+      themeVariables: {
+        primaryColor: "#6366f1",
+        primaryTextColor: "#e8edf7",
+        primaryBorderColor: "#4f46e5",
+        lineColor: "#8b95a8",
+        secondaryColor: "#1a2234",
+        tertiaryColor: "#121826",
+        fontFamily: "DM Sans, system-ui, sans-serif"
+      },
+      flowchart: { curve: "basis", padding: 16 },
+      sequence: { actorMargin: 60, messageMargin: 40 }
+    });
+  </script>
+</body>
+</html>

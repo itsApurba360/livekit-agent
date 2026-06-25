@@ -233,7 +233,8 @@ async def entrypoint(ctx: agents.JobContext):
         client=client,
         customer_id=customer_id,
         phone_number=phone_number,
-        on_verify_success=on_verification_success
+        on_verify_success=on_verification_success,
+        room=ctx.room
     )
 
     # Initialize Realtime AI models

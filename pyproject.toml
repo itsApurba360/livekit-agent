@@ -1,0 +1,22 @@
+[project]
+name = "livekit-remote-agent"
+version = "0.1.0"
+description = "REST-decoupled LiveKit Voice Agent for Frappe/ERPNext"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "livekit",
+    "livekit-agents",
+    "livekit-plugins-openai",
+    "livekit-plugins-google",
+    "livekit-plugins-noise-cancellation",
+    "livekit-plugins-silero",
+    "requests",
+    "python-dotenv",
+    "certifi",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+]

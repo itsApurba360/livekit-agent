@@ -1,0 +1,33 @@
+# Use a lightweight official Python image
+FROM python:3.11-slim
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=off \
+    PIP_DISABLE_PIP_VERSION_CHECK=on
+
+# Set work directory
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv
+ADD https://astral.sh/uv/install.sh /install.sh
+RUN chmod 755 /install.sh && /install.sh && rm /install.sh
+
+# Copy dependency definition
+COPY pyproject.toml /app/
+
+# Install dependencies
+RUN /root/.local/bin/uv sync --no-install-project
+
+# Copy application source code
+COPY . /app
+
+# Run agent worker by default
+CMD ["/root/.local/bin/uv", "run", "agent.py", "start"]

@@ -2,7 +2,7 @@
   "agent_type": "Support",
   "provider": "OpenAI",
   "model": "gpt-realtime-mini",
-  "voice": "zephyr",
+  "voice": "marin",
   "company_name": "LSA Office",
   "support_agent": {
     "name": "Kavya",

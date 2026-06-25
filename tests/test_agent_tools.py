@@ -216,14 +216,14 @@ class CustomerQueryToolsTestCase(unittest.IsolatedAsyncioTestCase):
     def mark_verified(self):
         self.tools.is_verified = True
 
-    async def test_get_customer_sales_orders_requires_verification(self):
+    async def test_get_customer_sales_orders_works_without_verification(self):
         result = await self.tools.get_customer_sales_orders()
 
-        self.assertIn("Verification required", result)
+        self.assertNotIn("Verification required", result)
+        self.assertIn("Found 1 sales orders", result)
+        self.assertIn("SO-001", result)
 
     async def test_get_customer_sales_orders_returns_recent_orders(self):
-        self.mark_verified()
-
         result = await self.tools.get_customer_sales_orders()
 
         self.assertIn("Found 1 sales orders", result)
@@ -231,8 +231,6 @@ class CustomerQueryToolsTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Not Delivered", result)
 
     async def test_get_customer_pending_amount_sums_unpaid_invoices(self):
-        self.mark_verified()
-
         result = await self.tools.get_customer_pending_amount()
 
         self.assertIn("750.0", result)
@@ -240,8 +238,6 @@ class CustomerQueryToolsTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertIn("SI-002", result)
 
     async def test_get_customer_details_returns_profile_and_contact(self):
-        self.mark_verified()
-
         result = await self.tools.get_customer_details()
 
         self.assertIn("Acme Industries", result)
@@ -250,8 +246,6 @@ class CustomerQueryToolsTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertIn("29ABCDE1234F1Z5", result)
 
     async def test_get_sales_order_details_returns_itemized_order(self):
-        self.mark_verified()
-
         result = await self.tools.get_sales_order_details("SO-001")
 
         self.assertIn("Details of Sales Order SO-001", result)
@@ -266,8 +260,6 @@ class CustomerQueryToolsTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertIn("does not belong to the linked customer", result)
 
     async def test_get_sales_invoice_details_returns_itemized_invoice(self):
-        self.mark_verified()
-
         result = await self.tools.get_sales_invoice_details("SI-001")
 
         self.assertIn("Details of Sales Invoice SI-001", result)
@@ -356,6 +348,27 @@ class CustomerQueryToolsTestCase(unittest.IsolatedAsyncioTestCase):
             "format=Sales%20Order%20with%20payment%20details",
             self.client.sent_files[0]["file_link"],
         )
+
+    async def test_send_text_whatsapp_requires_verification(self):
+        result = await self.tools.send_text_whatsapp("Your order ID is SO-001.")
+
+        self.assertIn("Verification required", result)
+
+    async def test_send_text_whatsapp_rejects_empty_message(self):
+        self.mark_verified()
+
+        result = await self.tools.send_text_whatsapp("   ")
+
+        self.assertIn("Please provide the text message", result)
+
+    async def test_send_text_whatsapp_sends_message(self):
+        self.mark_verified()
+
+        result = await self.tools.send_text_whatsapp("Your order ID is SO-001.")
+
+        self.assertIn("successfully sent", result)
+        self.assertEqual(self.client.sent_messages[-1]["mobile_number"], "9876543210")
+        self.assertEqual(self.client.sent_messages[-1]["message"], "Your order ID is SO-001.")
 
 
 if __name__ == "__main__":

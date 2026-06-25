@@ -38,14 +38,17 @@ except Exception as config_err:
 DEFAULT_TRANSFER_NUMBER = os.environ.get("DEFAULT_TRANSFER_NUMBER")
 SIP_DOMAIN = os.environ.get("VOBIZ_SIP_DOMAIN")
 
-DEFAULT_SUPPORT_UNVERIFIED_RULES = """- When a customer asks about their order status, pending payment, or customer info, you MUST verify their identity first. You MUST call the `send_verification_otp` tool using the tool calling API immediately. Do not ask for their permission first.
-- CRITICAL: You are NOT allowed to verify the customer or tell them that you sent a code without executing the `send_verification_otp` tool first. Calling the tool is the only way the system actually generates and sends the WhatsApp message. Do NOT tell the customer that you have sent the code until you have actually executed the `send_verification_otp` tool and it has returned a success message. Once the tool returns success, say: "मैंने आपके व्हाट्सएप पर एक वेरिफिकेशन कोड भेजा है। कृपया मुझे वह कोड बताएं या अपने फोन कीपैड पर टाइप करें।"
-- When they speak the code, call `verify_otp` to check if it matches.
-- Do not call get_customer_sales_orders, get_customer_pending_amount, get_customer_details, get_sales_order_details, or get_sales_invoice_details until the customer has been successfully verified (i.e. verify_otp returns success, or a system note confirms verification).
+DEFAULT_SUPPORT_UNVERIFIED_RULES = """- The caller is linked to a registered customer number. You may answer questions about sales orders, invoice status, outstanding amounts, and customer info directly using your tools (get_customer_sales_orders, get_customer_pending_amount, get_customer_details, get_sales_order_details, get_sales_invoice_details) without any WhatsApp verification.
+- Do NOT ask for verification at the start of the call or for voice-only queries.
+- WhatsApp verification is ONLY required when the customer asks to receive information via WhatsApp (text details such as order ID, balance, customer name, or a PDF copy of a Sales Order or Sales Invoice).
+- When the customer asks for WhatsApp delivery, you MUST call `send_verification_otp` immediately. Do not ask for permission first.
+- CRITICAL: You are NOT allowed to say you sent a code without executing `send_verification_otp` first. Only after the tool returns success, say: "मैंने आपके व्हाट्सएप पर एक वेरिफिकेशन कोड भेजा है। कृपया मुझे वह कोड बताएं या अपने फोन कीपैड पर टाइप करें।"
+- When they speak the code, call `verify_otp` to check if it matches. Only after successful verification, call `send_text_whatsapp` for text details or `send_pdf_whatsapp` for PDF documents.
 - If the customer is not registered on WhatsApp (indicated by the `send_verification_otp` tool), ask them to provide a valid WhatsApp number."""
 
-DEFAULT_SUPPORT_VERIFIED_RULES = """- The customer identity is successfully verified. You are authorized to access and share their sales orders, pending amounts, and details.
-- Do NOT repeat or mention verification, OTP, or verification status in subsequent turns. Focus purely on answering their query."""
+DEFAULT_SUPPORT_VERIFIED_RULES = """- The customer is verified for WhatsApp delivery. You may call `send_text_whatsapp` to send requested details as a text message, or `send_pdf_whatsapp` to send a Sales Order or Sales Invoice PDF.
+- Do NOT repeat or mention verification, OTP, or verification status in subsequent turns. Continue helping with their request.
+- You may still use all customer query tools freely for voice answers."""
 
 class StandaloneAgent(Agent):
     """
@@ -167,7 +170,7 @@ async def entrypoint(ctx: agents.JobContext):
             prompt_base += f"\n\nSecurity Rules:\n{rules_addon}"
 
         if customer_id:
-            prompt_base += f"\n\nThe caller is linked to Customer ID: '{customer_id}'. You can use tools (get_customer_sales_orders, get_sales_order_details, get_customer_pending_amount, get_sales_invoice_details, get_customer_details, send_pdf_whatsapp) to query their details. When explaining details, summarize in natural, polite Hindi/Hinglish. Do not read raw codes verbatim."
+            prompt_base += f"\n\nThe caller is linked to Customer ID: '{customer_id}'. You can use tools (get_customer_sales_orders, get_sales_order_details, get_customer_pending_amount, get_sales_invoice_details, get_customer_details, send_text_whatsapp, send_pdf_whatsapp) to query their details. When explaining details, summarize in natural, polite Hindi/Hinglish. Do not read raw codes verbatim."
         else:
             prompt_base += "\n\nNo Customer is currently linked to this call. You can use the search_customer tool to find a customer by name or phone number."
 
@@ -207,7 +210,7 @@ async def entrypoint(ctx: agents.JobContext):
         
         # In-place prompt compilation swap
         new_system_prompt = get_compiled_prompt(is_verified=True)
-        for msg in chat_ctx.messages:
+        for msg in chat_ctx.messages():
             if msg.role == "system":
                 msg.content = new_system_prompt
                 break
@@ -215,9 +218,11 @@ async def entrypoint(ctx: agents.JobContext):
         # Append one-time confirmation instruction
         chat_ctx.add_message(
             role="system",
-            content="[System Note: Verification successful. Confirm this once to the user by saying: 'धन्यवाद, आपका वेरिफिकेशन सफल रहा।' and then answer their query. Do not mention verification or OTP again.]"
+            content="[System Note: WhatsApp verification successful. Confirm this once to the user by saying: 'धन्यवाद, आपका वेरिफिकेशन सफल रहा।' and then fulfill their WhatsApp request via send_text_whatsapp or send_pdf_whatsapp. Do not mention verification or OTP again.]"
         )
         await agent_instance.update_chat_ctx(chat_ctx)
+
+
         
         # Google Gemini Live / Realtime handles context updates natively. Others need manual prompt regeneration.
         if not is_gemini:
@@ -250,6 +255,7 @@ async def entrypoint(ctx: agents.JobContext):
         raise ValueError(f"Unsupported provider: {provider}")
 
     session = AgentSession(llm=realtime_llm)
+    fnc_ctx.session = session
 
     # Start LiveKit Agent Session
     agent_instance = StandaloneAgent(instructions=system_prompt, tools=list(fnc_ctx.function_tools.values()))
@@ -263,9 +269,11 @@ async def entrypoint(ctx: agents.JobContext):
     )
 
     # Greet user at startup
-    await session.generate_reply(
-        instructions=f"[System Note: Introduce yourself to the customer with this greeting: '{initial_greeting}']"
-    )
+    if "3.1" not in model:
+        await session.generate_reply(
+            instructions=f"[System Note: Introduce yourself to the customer with this greeting: '{initial_greeting}']"
+        )
+
 
     # DTMF (keypad) Listener for OTP verification
     @ctx.room.on("sip_dtmf_received")
@@ -305,5 +313,6 @@ if __name__ == "__main__":
         agents.WorkerOptions(
             entrypoint_fnc=entrypoint,
             agent_name="remote-agent-worker",
+            load_threshold=0.99,
         )
     )

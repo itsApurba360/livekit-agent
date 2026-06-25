@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import logging
 import random
-from typing import Optional, Callable
+from typing import Optional, Callable, Any
 from livekit.agents import llm
 from frappe_client import FrappeRestClient
 
@@ -12,7 +12,7 @@ class CustomerQueryTools(llm.ToolContext):
     A standalone LLM ToolContext that implements all customer information lookup
     and WhatsApp OTP/PDF sending logic using a remote Frappe REST client instead of local ORM imports.
     """
-    def __init__(self, client: FrappeRestClient, customer_id: Optional[str] = None, phone_number: Optional[str] = None, on_verify_success: Optional[Callable] = None):
+    def __init__(self, client: FrappeRestClient, customer_id: Optional[str] = None, phone_number: Optional[str] = None, on_verify_success: Optional[Callable] = None, session: Optional[Any] = None):
         super().__init__(tools=[])
         self.client = client
         self.customer_id = customer_id
@@ -21,6 +21,7 @@ class CustomerQueryTools(llm.ToolContext):
         self.generated_otp = None
         self.dtmf_buffer = ""
         self.on_verify_success = on_verify_success
+        self.session = session
 
     @llm.function_tool(description="Get the list and status of sales orders for the current customer.")
     async def get_customer_sales_orders(self, customer_id: Optional[str] = None):
@@ -28,8 +29,6 @@ class CustomerQueryTools(llm.ToolContext):
         Args:
             customer_id: Optional customer ID. If not provided, the customer linked to this call will be used.
         """
-        if not self.is_verified:
-            return "Verification required. Please send a verification OTP first by calling send_verification_otp."
         target_customer = customer_id or self.customer_id
         if not target_customer:
             return "No customer is linked or provided. Please search for the customer first using search_customer."
@@ -61,8 +60,6 @@ class CustomerQueryTools(llm.ToolContext):
         Args:
             customer_id: Optional customer ID. If not provided, the customer linked to this call will be used.
         """
-        if not self.is_verified:
-            return "Verification required. Please send a verification OTP first by calling send_verification_otp."
         target_customer = customer_id or self.customer_id
         if not target_customer:
             return "No customer is linked or provided. Outstanding balance cannot be calculated."
@@ -96,8 +93,6 @@ class CustomerQueryTools(llm.ToolContext):
         Args:
             customer_id: Optional customer ID. If not provided, the customer linked to this call will be used.
         """
-        if not self.is_verified:
-            return "Verification required. Please send a verification OTP first by calling send_verification_otp."
         target_customer = customer_id or self.customer_id
         if not target_customer:
             return "No customer is linked or provided. Please search for the customer first using search_customer."
@@ -136,8 +131,6 @@ class CustomerQueryTools(llm.ToolContext):
         Args:
             sales_order_id: The exact ID of the Sales Order (e.g. SAL-ORD-2026-01261).
         """
-        if not self.is_verified:
-            return "Verification required. Please send a verification OTP first by calling send_verification_otp."
         if not sales_order_id:
             return "Please provide a valid Sales Order ID."
         try:
@@ -177,8 +170,6 @@ class CustomerQueryTools(llm.ToolContext):
         Args:
             invoice_id: The exact ID of the Sales Invoice (e.g. LSA/26-27/0008).
         """
-        if not self.is_verified:
-            return "Verification required. Please send a verification OTP first by calling send_verification_otp."
         if not invoice_id:
             return "Please provide a valid Sales Invoice ID."
         try:
@@ -245,7 +236,7 @@ class CustomerQueryTools(llm.ToolContext):
             logger.error(f"Failed to search customer: {e}")
             return f"Error searching customer: {str(e)}"
 
-    @llm.function_tool(description="Send a 4-digit verification OTP to the customer's WhatsApp. Call this when customer verification is required.")
+    @llm.function_tool(description="Send a 4-digit verification OTP to the customer's WhatsApp. Call this when the customer asks to receive information (text details or PDF documents) via WhatsApp.")
     async def send_verification_otp(self, customer_id: Optional[str] = None):
         """
         Args:
@@ -321,7 +312,7 @@ class CustomerQueryTools(llm.ToolContext):
         else:
             return f"Verification failed. The OTP '{otp}' is incorrect. Please ask the customer to check and provide the correct OTP."
 
-    @llm.function_tool(description="Send a PDF of a specific Sales Order or Sales Invoice via WhatsApp. Caller verification is required first.")
+    @llm.function_tool(description="Send a PDF of a specific Sales Order or Sales Invoice via WhatsApp. WhatsApp OTP verification is required first.")
     async def send_pdf_whatsapp(self, doctype: str, docname: str):
         """
         Args:
@@ -408,3 +399,42 @@ class CustomerQueryTools(llm.ToolContext):
         except Exception as e:
             logger.error(f"Error in send_pdf_whatsapp: {e}")
             return f"Error sending PDF: {str(e)}"
+
+    @llm.function_tool(description="Send a text message with requested customer details (such as order ID, invoice amount, customer name, order status, etc.) to the customer's WhatsApp. Use this when the customer explicitly asks to receive information via WhatsApp instead of hearing it on the call. Look up the details using the appropriate tools first, then pass a clear formatted message. WhatsApp OTP verification is required first.")
+    async def send_text_whatsapp(self, message: str, customer_id: Optional[str] = None):
+        """
+        Args:
+            message: The text content to send on WhatsApp. Should be a clear, readable summary of the requested details.
+            customer_id: Optional customer ID to resolve the WhatsApp number. If not provided, the customer linked to this call will be used.
+        """
+        if not self.is_verified:
+            return "Verification required. Please send a verification OTP first by calling send_verification_otp."
+        if not message or not message.strip():
+            return "Please provide the text message to send on WhatsApp."
+
+        target_customer = customer_id or self.customer_id
+        recipient_phone = self.phone_number
+        if not recipient_phone and target_customer:
+            try:
+                cust = self.client.get_resource("Customer", target_customer)
+                recipient_phone = cust.get("mobile_no") or cust.get("custom_primary_mobile_no") or cust.get("custom_alt_mobile_no")
+            except Exception as e:
+                logger.error(f"Error fetching customer phone number over REST: {e}")
+
+        if not recipient_phone:
+            return "Could not determine a WhatsApp phone number for the customer."
+
+        cleaned_phone = "".join(c for c in recipient_phone if c.isdigit())
+        if len(cleaned_phone) < 10:
+            return f"Invalid phone number '{recipient_phone}' for customer. Cannot send WhatsApp message."
+        last_10 = cleaned_phone[-10:]
+
+        try:
+            res = self.client.send_whatsapp_message(mobile_number=last_10, message=message.strip())
+            if res.get("status"):
+                logger.info(f"WhatsApp text message successfully sent to {last_10}.")
+                return f"The message has been successfully sent to WhatsApp number {last_10}."
+            return f"Failed to send WhatsApp message: {res.get('msg')}."
+        except Exception as e:
+            logger.error(f"Error in send_text_whatsapp: {e}")
+            return f"Error sending WhatsApp message: {str(e)}"

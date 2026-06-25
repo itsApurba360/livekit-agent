@@ -60,7 +60,6 @@ class TestCustomerQueryToolsFrappeIntegration(unittest.IsolatedAsyncioTestCase):
             customer_id=self.customer_id,
             phone_number=self.customer.get("mobile_no"),
         )
-        self.tools.is_verified = True
 
     def require_whatsapp_send_tests_enabled(self):
         if os.environ.get("RUN_WHATSAPP_SEND_TESTS") != "1":
@@ -123,7 +122,6 @@ class TestCustomerQueryToolsFrappeIntegration(unittest.IsolatedAsyncioTestCase):
         order_id = orders[0]["name"]
         order_customer = orders[0]["customer"]
         tools = CustomerQueryTools(client=self.client, customer_id=order_customer)
-        tools.is_verified = True
 
         result = await call_function_tool(tools.get_sales_order_details, order_id)
 
@@ -145,7 +143,6 @@ class TestCustomerQueryToolsFrappeIntegration(unittest.IsolatedAsyncioTestCase):
         invoice_id = invoices[0]["name"]
         invoice_customer = invoices[0]["customer"]
         tools = CustomerQueryTools(client=self.client, customer_id=invoice_customer)
-        tools.is_verified = True
 
         result = await call_function_tool(tools.get_sales_invoice_details, invoice_id)
 

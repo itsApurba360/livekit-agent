@@ -80,15 +80,28 @@ class TestCustomerQueryTools(unittest.TestCase):
         self.assertIsNone(self.tools.generated_otp)
         self.assertEqual(self.tools.dtmf_buffer, "")
 
-    def test_verification_enforcement(self):
+    def test_voice_queries_work_without_verification(self):
         loop = asyncio.get_event_loop()
+        self.mock_client.get_resource.return_value = {
+            "name": "Cust-001",
+            "customer_name": "Test Customer",
+            "customer_group": "Commercial",
+            "territory": "India",
+        }
+        self.mock_client.get_resource_list.return_value = []
+
         res = loop.run_until_complete(self.tools.get_customer_details())
-        self.assertIn("Verification required", res)
+        self.assertNotIn("Verification required", res)
 
         res = loop.run_until_complete(self.tools.get_customer_sales_orders())
-        self.assertIn("Verification required", res)
+        self.assertNotIn("Verification required", res)
 
         res = loop.run_until_complete(self.tools.get_customer_pending_amount())
+        self.assertNotIn("Verification required", res)
+
+    def test_pdf_send_requires_verification(self):
+        loop = asyncio.get_event_loop()
+        res = loop.run_until_complete(self.tools.send_pdf_whatsapp("Sales Invoice", "LSA/26-27/0008"))
         self.assertIn("Verification required", res)
 
     def test_send_verification_otp(self):

@@ -1,7 +1,7 @@
 {
   "agent_type": "Support",
-  "provider": "Google",
-  "model": "gemini-3.1-flash-live-preview",
+  "provider": "OpenAI",
+  "model": "gpt-realtime-mini",
   "voice": "zephyr",
   "company_name": "LSA Office",
   "support_agent": {

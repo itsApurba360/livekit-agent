@@ -1,7 +1,7 @@
 {
   "agent_type": "Support",
   "provider": "Google",
-  "model": "gemini-3.1-flash-live-preview",
+  "model": "gemini-2.5-flash",
   "voice": "zephyr",
   "company_name": "LSA Office",
   "support_agent": {

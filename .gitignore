@@ -104,6 +104,9 @@ celerybeat.pid
 # SageMath parsed files
 *.sage.py
 
+# Cursor MCP config (may contain API keys)
+.cursor/
+
 # Environments
 .env
 .venv

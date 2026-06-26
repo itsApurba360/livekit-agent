@@ -783,6 +783,7 @@
                     if (track.kind === 'audio') {
                         logMessage("info", `Subscribed to audio track from ${participant.identity}`);
                         const element = track.attach();
+                        element.id = `audio-${participant.identity}-${track.sid}`;
                         document.body.appendChild(element);
                     }
                 });
@@ -790,7 +791,8 @@
                 currentRoom.on(LivekitClient.RoomEvent.TrackUnsubscribed, (track, publication, participant) => {
                     if (track.kind === 'audio') {
                         logMessage("info", `Unsubscribed from audio track of ${participant.identity}`);
-                        track.detach();
+                        const elements = track.detach();
+                        elements.forEach((el) => el.remove());
                     }
                 });
 
@@ -798,9 +800,16 @@
                 await currentRoom.connect(data.server_url, data.token);
 
                 // Publish microphone
-                logMessage("info", "Requesting microphone access...");
-                const audioOptions = micDeviceId ? { deviceId: { exact: micDeviceId } } : true;
-                await currentRoom.localParticipant.setMicrophoneEnabled(true, typeof audioOptions === 'object' ? audioOptions : undefined);
+                logMessage("info", "Requesting microphone access with echo cancellation...");
+                const audioCaptureOptions = {
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                    autoGainControl: true,
+                };
+                if (micDeviceId) {
+                    audioCaptureOptions.deviceId = { exact: micDeviceId };
+                }
+                await currentRoom.localParticipant.setMicrophoneEnabled(true, audioCaptureOptions);
                 logMessage("success", "Microphone published successfully.");
 
                 // Start active audio level monitor
@@ -822,6 +831,9 @@
         function cleanupUI() {
             currentRoom = null;
             stopAudioMonitoring();
+
+            // Clean up any remaining audio elements from the DOM
+            document.querySelectorAll('audio').forEach((el) => el.remove());
 
             const btn = document.getElementById('action-btn');
             btn.disabled = false;

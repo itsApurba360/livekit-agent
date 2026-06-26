@@ -10,8 +10,8 @@ import json
 import asyncio
 from dotenv import load_dotenv
 from livekit import agents, api
-from livekit.agents import AgentSession, Agent, RoomInputOptions
-from livekit.plugins import openai, google, noise_cancellation
+from livekit.agents import AgentSession, Agent
+from livekit.agents.voice.room_io import RoomOptions, AudioInputOptions
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -39,8 +39,9 @@ except Exception as config_err:
 # Default Configurations fallback
 DEFAULT_TRANSFER_NUMBER = os.environ.get("DEFAULT_TRANSFER_NUMBER")
 SIP_DOMAIN = os.environ.get("VOBIZ_SIP_DOMAIN")
+AGENT_NAME = os.environ.get("LIVEKIT_AGENT_NAME") or os.environ.get("AGENT_NAME") or "outbound-caller"
 
-DEFAULT_SUPPORT_UNVERIFIED_RULES = """- The caller is linked to a registered customer number. You may answer questions about sales orders, invoice status, outstanding amounts, and customer info directly using your tools (get_customer_sales_orders, get_customer_pending_amount, get_customer_details, get_sales_order_details, get_sales_invoice_details) without any WhatsApp verification.
+DEFAULT_SUPPORT_UNVERIFIED_RULES = """- The current call is linked to a registered customer number. You may answer questions about sales orders, invoice status, outstanding amounts, and customer info directly using your tools (get_customer_sales_orders, get_customer_pending_amount, get_customer_details, get_sales_order_details, get_sales_invoice_details) without any WhatsApp verification.
 - Do NOT ask for verification at the start of the call or for voice-only queries.
 - WhatsApp verification is ONLY required when the customer asks to receive information via WhatsApp (text details such as order ID, balance, customer name, or a PDF copy of a Sales Order or Sales Invoice).
 - When the customer asks for WhatsApp delivery, you MUST call `send_verification_otp` immediately. Do not ask for permission first.
@@ -230,6 +231,7 @@ def _outbound_trunk_id(config_dict: dict[str, Any]) -> Optional[str]:
         config_dict.get("outbound_trunk_id")
         or config_dict.get("sip_trunk_id")
         or agent_config.get("outbound_trunk_id")
+        or os.environ.get("OUTBOUND_TRUNK_ID")
         or os.environ.get("LIVEKIT_OUTBOUND_TRUNK_ID")
         or os.environ.get("SIP_OUTBOUND_TRUNK_ID")
     )
@@ -299,7 +301,12 @@ def _call_context_prompt(call_context: CallContext) -> str:
         f"- Direction: {call_context.direction}.",
     ]
     if call_context.phone_number:
-        lines.append(f"- Caller/callee phone number: {call_context.phone_number}.")
+        if call_context.is_outbound:
+            lines.append(f"- Callee phone number: {call_context.phone_number}.")
+        elif call_context.is_inbound:
+            lines.append(f"- Caller phone number: {call_context.phone_number}.")
+        else:
+            lines.append(f"- Participant phone number: {call_context.phone_number}.")
     if call_context.sip_call_status:
         lines.append(f"- Current SIP call status: {call_context.sip_call_status}.")
     if call_context.sip_call_id:
@@ -311,17 +318,50 @@ def _call_context_prompt(call_context: CallContext) -> str:
 
     if call_context.is_outbound:
         lines.append(
-            "- This is an outbound call placed by the agent. Do not speak before the callee answers or before they speak first. "
-            "On your first response after they speak, briefly introduce yourself and why you called."
+            "- This is an outbound call placed by LSA Office. The customer or lead did not call us in this session. "
+            "Do not speak before the callee answers or before they speak first. On your first response after they speak, "
+            "briefly introduce yourself, LSA Office, and the reason for calling."
         )
     elif call_context.is_inbound:
         lines.append(
-            "- This is an inbound call. The user called us, so greet them as the caller and help with their request."
+            "- This is an inbound call. The user called LSA Office, so greet them as the caller, welcome them, "
+            "and ask how you can help. Do not say that you called them, that you are following up on an enquiry, "
+            "or that you wanted two minutes to understand their requirement unless the user or metadata says so."
         )
     else:
-        lines.append("- This is a web or app session. Treat it like a normal customer support conversation.")
+        lines.append(
+            "- This is a web or app session. Treat it like a normal user-initiated support conversation. "
+            "Do not imply LSA Office placed a phone call."
+        )
 
     return "\n".join(lines)
+
+
+def _select_initial_greeting_template(
+    agent_settings: dict[str, Any],
+    call_context: CallContext,
+    fallback_greeting: str,
+) -> str:
+    if call_context.is_outbound:
+        return (
+            agent_settings.get("outbound_initial_greeting")
+            or agent_settings.get("initial_greeting")
+            or fallback_greeting
+        )
+
+    if call_context.is_inbound:
+        return (
+            agent_settings.get("inbound_initial_greeting")
+            or agent_settings.get("initial_greeting")
+            or fallback_greeting
+        )
+
+    return (
+        agent_settings.get("web_initial_greeting")
+        or agent_settings.get("inbound_initial_greeting")
+        or agent_settings.get("initial_greeting")
+        or fallback_greeting
+    )
 
 
 class StandaloneAgent(Agent):
@@ -332,6 +372,7 @@ class StandaloneAgent(Agent):
         super().__init__(
             instructions=instructions,
             tools=tools,
+            turn_detection=None,
         )
 
 async def entrypoint(ctx: agents.JobContext):
@@ -339,6 +380,8 @@ async def entrypoint(ctx: agents.JobContext):
     Main entrypoint for the REST-decoupled agent worker.
     Handles both inbound (PSTN/web) and outbound (dial-out) calls.
     """
+    from livekit.plugins import openai, google, noise_cancellation
+
     logger.info(f"Connecting to room: {ctx.room.name}")
 
     # Initialize remote Frappe REST client
@@ -374,7 +417,7 @@ async def entrypoint(ctx: agents.JobContext):
     if phone_number:
         try:
             logger.info(f"Performing remote lookup for caller phone: {phone_number}")
-            caller_info = client.lookup_caller(phone_number)
+            caller_info = await asyncio.to_thread(client.lookup_caller, phone_number)
             logger.info(f"Remote caller lookup result: {caller_info}")
         except Exception as err:
             logger.error(f"Failed to lookup caller via REST API: {err}")
@@ -402,7 +445,11 @@ async def entrypoint(ctx: agents.JobContext):
         fallback_greeting = "नमस्ते {lead_name} जी, मैं नंदिनी बोल रही हूँ एलएसए ऑफिस से।"
 
     system_prompt_template = agent_settings.get("system_prompt", fallback_prompt)
-    initial_greeting_template = agent_settings.get("initial_greeting", fallback_greeting)
+    initial_greeting_template = _select_initial_greeting_template(
+        agent_settings,
+        call_context,
+        fallback_greeting,
+    )
 
     # Resolve dynamic system prompt compilation
     def get_compiled_prompt(is_verified: bool = False) -> str:
@@ -422,7 +469,7 @@ async def entrypoint(ctx: agents.JobContext):
             prompt_base += f"\n\nSecurity Rules:\n{rules_addon}"
 
         if customer_id:
-            prompt_base += f"\n\nThe caller is linked to Customer ID: '{customer_id}'. You can use tools (get_customer_sales_orders, get_sales_order_details, get_customer_pending_amount, get_sales_invoice_details, get_customer_details, send_text_whatsapp, send_pdf_whatsapp) to query their details. When explaining details, summarize in natural, polite Hindi/Hinglish. Do not read raw codes verbatim."
+            prompt_base += f"\n\nThe current call is linked to Customer ID: '{customer_id}'. You can use tools (get_customer_sales_orders, get_sales_order_details, get_customer_pending_amount, get_sales_invoice_details, get_customer_details, send_text_whatsapp, send_pdf_whatsapp) to query their details. When explaining details, summarize in natural, polite Hindi/Hinglish. Do not read raw codes verbatim."
         else:
             prompt_base += "\n\nNo Customer is currently linked to this call. You can use the search_customer tool to find a customer by name or phone number."
 
@@ -500,16 +547,33 @@ async def entrypoint(ctx: agents.JobContext):
             api_key=ai_api_key,
             instructions=system_prompt,
         )
+        session = AgentSession(llm=realtime_llm)
     elif provider == "OpenAI":
-        realtime_llm = openai.realtime.RealtimeModel(
-            model=model,
-            voice=voice.lower() if voice else "alloy",
-            api_key=ai_api_key,
-        )
+        custom_tts_enabled = agent_config.get("custom_tts", False)
+        custom_tts_voice = agent_config.get("custom_tts_voice", "Aoede")
+
+        if custom_tts_enabled:
+            realtime_llm = openai.realtime.RealtimeModel(
+                model=model,
+                modalities=["text"],
+                api_key=ai_api_key,
+            )
+            google_api_key = os.environ.get("GOOGLE_API_KEY")
+            custom_tts = google.beta.GeminiTTS(
+                model="gemini-3.1-flash-tts-preview",
+                api_key=google_api_key,
+                voice_name=custom_tts_voice,
+            )
+            session = AgentSession(llm=realtime_llm, tts=custom_tts)
+        else:
+            realtime_llm = openai.realtime.RealtimeModel(
+                model=model,
+                voice=voice.lower() if voice else "alloy",
+                api_key=ai_api_key,
+            )
+            session = AgentSession(llm=realtime_llm)
     else:
         raise ValueError(f"Unsupported provider: {provider}")
-
-    session = AgentSession(llm=realtime_llm)
     fnc_ctx.session = session
 
     agent_tools = list(fnc_ctx.function_tools.values())
@@ -524,18 +588,23 @@ async def entrypoint(ctx: agents.JobContext):
     system_prompt = get_compiled_prompt(is_verified=fnc_ctx.is_verified)
 
     # Start LiveKit Agent Session
+    nc_option = noise_cancellation.BVCTelephony() if agent_config.get("noise_cancellation", False) else None
     agent_instance = StandaloneAgent(instructions=system_prompt, tools=agent_tools)
     await session.start(
         room=ctx.room,
         agent=agent_instance,
-        room_input_options=RoomInputOptions(
-            noise_cancellation=noise_cancellation.BVCTelephony(),
+        room_options=RoomOptions(
+            audio_input=AudioInputOptions(
+                noise_cancellation=nc_option,
+            ),
             close_on_disconnect=True,
+            delete_room_on_close=True,
         ),
     )
 
     # Greet user at startup
     if "3.1" not in model and not call_context.is_outbound:
+        await asyncio.sleep(0.75)  # Wait for connection clicks/pops to settle
         await session.generate_reply(
             instructions=f"[System Note: Introduce yourself to the customer with this greeting: '{initial_greeting}']"
         )
@@ -580,7 +649,8 @@ if __name__ == "__main__":
     agents.cli.run_app(
         agents.WorkerOptions(
             entrypoint_fnc=entrypoint,
-            agent_name="remote-agent-worker",
+            agent_name=AGENT_NAME,
             load_threshold=0.99,
+            initialize_process_timeout=30.0,
         )
     )

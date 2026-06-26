@@ -25,8 +25,6 @@ Fall back to the IDs and `curl` examples in this file, or ask the user for `DOKP
 
 ### MCP setup (if missing)
 
-Create `.cursor/mcp.json`:
-
 ```json
 {
   "mcpServers": {
@@ -46,32 +44,32 @@ Reload Cursor after adding. Optional: limit tools with `DOKPLOY_ENABLED_TAGS=pro
 
 ## Server
 
-| Setting | Value |
-|---------|-------|
-| Dokploy URL | `http://173.212.216.156:3000` |
+| Setting         | Value                          |
+| --------------- | ------------------------------ |
+| Dokploy URL     | `http://173.212.216.156:3000`  |
 | API auth header | `x-api-key: <DOKPLOY_API_KEY>` |
 
 ## Project & Application
 
-| Resource | Name | ID |
-|----------|------|-----|
-| Project | `agents` | `LWsYBVpSGZGAEuc5Yss9b` |
-| Environment | `production` (default) | `hmAdxEdvBX1o4mveDrJFu` |
-| Application | `livekit-agent` | `vBCXzDVrjNT175I1RZgHV` |
-| Docker app name | `livekit-agent-ur38zy` | — |
+| Resource        | Name                   | ID                      |
+| --------------- | ---------------------- | ----------------------- |
+| Project         | `agents`               | `LWsYBVpSGZGAEuc5Yss9b` |
+| Environment     | `production` (default) | `hmAdxEdvBX1o4mveDrJFu` |
+| Application     | `livekit-agent`        | `vBCXzDVrjNT175I1RZgHV` |
+| Docker app name | `livekit-agent-ur38zy` | —                       |
 
 **Dashboard:** http://173.212.216.156:3000/dashboard/project/LWsYBVpSGZGAEuc5Yss9b/environment/hmAdxEdvBX1o4mveDrJFu
 
 ## Source & Build
 
-| Setting | Value |
-|---------|-------|
-| Git repo | https://github.com/itsApurba360/livekit-agent |
-| Branch | `master` |
-| Build type | `dockerfile` |
-| Dockerfile | `Dockerfile` (context: `.`) |
-| Auto-deploy | enabled (on git push) |
-| Inbound ports | none (worker connects outbound to LiveKit) |
+| Setting       | Value                                         |
+| ------------- | --------------------------------------------- |
+| Git repo      | https://github.com/itsApurba360/livekit-agent |
+| Branch        | `master`                                      |
+| Build type    | `dockerfile`                                  |
+| Dockerfile    | `Dockerfile` (context: `.`)                   |
+| Auto-deploy   | enabled (on git push)                         |
+| Inbound ports | none (worker connects outbound to LiveKit)    |
 
 ## Environment Variables
 

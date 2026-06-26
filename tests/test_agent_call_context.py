@@ -45,6 +45,14 @@ def _install_livekit_stubs():
         def __init__(self, **kwargs):
             self.kwargs = kwargs
 
+    class RoomOptions:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class AudioInputOptions:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
     class WorkerOptions:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
@@ -77,11 +85,18 @@ def _install_livekit_stubs():
     livekit_module.agents = agents_module
     livekit_module.api = api_module
 
+    voice_module = types.ModuleType("livekit.agents.voice")
+    room_io_module = types.ModuleType("livekit.agents.voice.room_io")
+    room_io_module.RoomOptions = RoomOptions
+    room_io_module.AudioInputOptions = AudioInputOptions
+
     sys.modules["certifi"] = certifi_module
     sys.modules["dotenv"] = dotenv_module
     sys.modules["livekit"] = livekit_module
     sys.modules["livekit.api"] = api_module
     sys.modules["livekit.agents"] = agents_module
+    sys.modules["livekit.agents.voice"] = voice_module
+    sys.modules["livekit.agents.voice.room_io"] = room_io_module
 
     for module_name in [
         "livekit.plugins",
@@ -94,6 +109,7 @@ def _install_livekit_stubs():
     sys.modules["livekit.plugins.noise_cancellation"].BVCTelephony = lambda: object()
     sys.modules["livekit.plugins.openai"].realtime = types.SimpleNamespace(RealtimeModel=lambda **kwargs: kwargs)
     sys.modules["livekit.plugins.google"].realtime = types.SimpleNamespace(RealtimeModel=lambda **kwargs: kwargs)
+    sys.modules["livekit.plugins.google"].beta = types.SimpleNamespace(GeminiTTS=lambda **kwargs: kwargs)
 
 
 _stubbed_module_names = [
@@ -102,6 +118,8 @@ _stubbed_module_names = [
     "livekit",
     "livekit.api",
     "livekit.agents",
+    "livekit.agents.voice",
+    "livekit.agents.voice.room_io",
     "livekit.plugins",
     "livekit.plugins.openai",
     "livekit.plugins.google",
@@ -198,7 +216,81 @@ class AgentCallContextTestCase(unittest.IsolatedAsyncioTestCase):
         prompt = agent._call_context_prompt(call_context)
 
         self.assertIn("Direction: outbound", prompt)
+        self.assertIn("Callee phone number", prompt)
         self.assertIn("Do not speak before the callee answers or before they speak first", prompt)
+
+    def test_inbound_prompt_prevents_outbound_call_framing(self):
+        call_context = agent.CallContext(direction="inbound", phone_number="+919876543210")
+
+        prompt = agent._call_context_prompt(call_context)
+
+        self.assertIn("Direction: inbound", prompt)
+        self.assertIn("Caller phone number", prompt)
+        self.assertIn("user called LSA Office", prompt)
+        self.assertIn("Do not say that you called them", prompt)
+        self.assertNotIn("Callee phone number", prompt)
+
+    def test_selects_direction_specific_greetings(self):
+        agent_settings = {
+            "initial_greeting": "legacy greeting",
+            "inbound_initial_greeting": "inbound greeting",
+            "outbound_initial_greeting": "outbound greeting",
+            "web_initial_greeting": "web greeting",
+        }
+
+        self.assertEqual(
+            agent._select_initial_greeting_template(
+                agent_settings,
+                agent.CallContext(direction="inbound"),
+                "fallback greeting",
+            ),
+            "inbound greeting",
+        )
+        self.assertEqual(
+            agent._select_initial_greeting_template(
+                agent_settings,
+                agent.CallContext(direction="outbound"),
+                "fallback greeting",
+            ),
+            "outbound greeting",
+        )
+        self.assertEqual(
+            agent._select_initial_greeting_template(
+                agent_settings,
+                agent.CallContext(direction="web"),
+                "fallback greeting",
+            ),
+            "web greeting",
+        )
+
+    def test_agent_configs_have_direction_specific_greetings(self):
+        for agent_key in ("support_agent", "sales_agent"):
+            with self.subTest(agent_key=agent_key):
+                agent_settings = agent.agent_config[agent_key]
+                self.assertIn("inbound_initial_greeting", agent_settings)
+                self.assertIn("outbound_initial_greeting", agent_settings)
+
+    def test_sales_inbound_greeting_does_not_assume_we_called(self):
+        sales_settings = agent.agent_config["sales_agent"]
+
+        inbound_greeting = agent._select_initial_greeting_template(
+            sales_settings,
+            agent.CallContext(direction="inbound"),
+            "fallback greeting",
+        )
+        outbound_greeting = agent._select_initial_greeting_template(
+            sales_settings,
+            agent.CallContext(direction="outbound"),
+            "fallback greeting",
+        )
+
+        self.assertNotIn("Aapne hamare services ke liye enquiry", inbound_greeting)
+        self.assertNotIn("requirement samajhni thi", inbound_greeting)
+        self.assertIn("Aapne hamare services ke liye enquiry", outbound_greeting)
+
+    def test_outbound_trunk_uses_documented_env_name(self):
+        with patch.dict(agent.os.environ, {"OUTBOUND_TRUNK_ID": "ST_ENV"}, clear=False):
+            self.assertEqual(agent._outbound_trunk_id({}), "ST_ENV")
 
     async def test_ensure_outbound_participant_dials_with_trunk_and_waits(self):
         ctx = FakeContext(FakeRoom(name="agent_call_abc123"))
@@ -226,7 +318,8 @@ class AgentCallContextTestCase(unittest.IsolatedAsyncioTestCase):
         ctx = FakeContext(FakeRoom(name="agent_call_abc123"))
         call_context = agent.CallContext(direction="outbound", phone_number="+919876543210")
 
-        updated_context = await agent._ensure_outbound_participant(ctx, call_context, {})
+        with patch.dict(agent.os.environ, {}, clear=True), patch.object(agent, "agent_config", {}):
+            updated_context = await agent._ensure_outbound_participant(ctx, call_context, {})
 
         self.assertFalse(updated_context.ready)
         self.assertEqual(ctx.shutdown_reason, "Outbound SIP trunk not configured")

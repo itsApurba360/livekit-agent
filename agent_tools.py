@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+import asyncio
 import logging
 import random
 from typing import Optional, Callable, Any
@@ -34,7 +34,8 @@ class CustomerQueryTools(llm.ToolContext):
         if not target_customer:
             return "No customer is linked or provided. Please search for the customer first using search_customer."
         try:
-            orders = self.client.get_resource_list(
+            orders = await asyncio.to_thread(
+                self.client.get_resource_list,
                 "Sales Order",
                 filters=[["customer", "=", target_customer], ["docstatus", "=", 1]],
                 fields=["name", "status", "grand_total", "billing_status", "delivery_status", "transaction_date"],
@@ -65,7 +66,8 @@ class CustomerQueryTools(llm.ToolContext):
         if not target_customer:
             return "No customer is linked or provided. Outstanding balance cannot be calculated."
         try:
-            invoices = self.client.get_resource_list(
+            invoices = await asyncio.to_thread(
+                self.client.get_resource_list,
                 "Sales Invoice",
                 filters=[["customer", "=", target_customer], ["docstatus", "=", 1], ["status", "!=", "Paid"]],
                 fields=["name", "outstanding_amount", "grand_total", "due_date"]
@@ -98,7 +100,7 @@ class CustomerQueryTools(llm.ToolContext):
         if not target_customer:
             return "No customer is linked or provided. Please search for the customer first using search_customer."
         try:
-            cust = self.client.get_resource("Customer", target_customer)
+            cust = await asyncio.to_thread(self.client.get_resource, "Customer", target_customer)
             if not cust:
                 return f"Customer '{target_customer}' does not exist in the database."
 
@@ -116,7 +118,7 @@ class CustomerQueryTools(llm.ToolContext):
             if cust.get("customer_primary_contact"):
                 contact_card = cust.get("customer_primary_contact")
                 try:
-                    contact = self.client.get_resource("Contact", contact_card)
+                    contact = await asyncio.to_thread(self.client.get_resource, "Contact", contact_card)
                     details.append(f"- Primary Contact Card: {contact_card} (Email: {contact.get('email_id') or 'N/A'})")
                 except Exception:
                     details.append(f"- Primary Contact Card: {contact_card}")
@@ -135,7 +137,7 @@ class CustomerQueryTools(llm.ToolContext):
         if not sales_order_id:
             return "Please provide a valid Sales Order ID."
         try:
-            so = self.client.get_resource("Sales Order", sales_order_id)
+            so = await asyncio.to_thread(self.client.get_resource, "Sales Order", sales_order_id)
             if not so:
                 return f"Sales Order '{sales_order_id}' does not exist in the database."
 
@@ -174,7 +176,7 @@ class CustomerQueryTools(llm.ToolContext):
         if not invoice_id:
             return "Please provide a valid Sales Invoice ID."
         try:
-            si = self.client.get_resource("Sales Invoice", invoice_id)
+            si = await asyncio.to_thread(self.client.get_resource, "Sales Invoice", invoice_id)
             if not si:
                 return f"Sales Invoice '{invoice_id}' does not exist."
 
@@ -219,7 +221,8 @@ class CustomerQueryTools(llm.ToolContext):
                 ["mobile_no", "like", f"%{search_query}%"],
                 ["custom_primary_mobile_no", "like", f"%{search_query}%"]
             ]
-            customers = self.client.get_resource_list(
+            customers = await asyncio.to_thread(
+                self.client.get_resource_list,
                 "Customer",
                 fields=["name", "customer_name", "mobile_no"],
                 or_filters=or_filters,
@@ -252,7 +255,7 @@ class CustomerQueryTools(llm.ToolContext):
 
         if not self.phone_number:
             try:
-                cust = self.client.get_resource("Customer", target_customer)
+                cust = await asyncio.to_thread(self.client.get_resource, "Customer", target_customer)
                 self.phone_number = cust.get("mobile_no") or cust.get("custom_primary_mobile_no") or cust.get("custom_alt_mobile_no")
             except Exception as e:
                 logger.error(f"Error fetching customer phone number over REST: {e}")
@@ -273,7 +276,7 @@ class CustomerQueryTools(llm.ToolContext):
         message = f"Your verification code for LSA Office is {otp}. Please tell or type this code to the voice assistant."
 
         try:
-            res = self.client.send_whatsapp_message(mobile_number=last_10, message=message)
+            res = await asyncio.to_thread(self.client.send_whatsapp_message, mobile_number=last_10, message=message)
             if res.get("status"):
                 logger.info(f"OTP {otp} successfully sent to {last_10} via WhatsApp REST API.")
                 return f"OTP has been sent to the customer's WhatsApp at {last_10}. Please ask the customer to tell you the 4-digit OTP or type it on their phone keypad."
@@ -328,7 +331,7 @@ class CustomerQueryTools(llm.ToolContext):
             return "Please provide a valid document name."
 
         try:
-            doc = self.client.get_resource(doctype, docname)
+            doc = await asyncio.to_thread(self.client.get_resource, doctype, docname)
             if not doc:
                 return f"{doctype} '{docname}' does not exist in the database."
 
@@ -337,7 +340,7 @@ class CustomerQueryTools(llm.ToolContext):
 
             recipient_phone = self.phone_number
             if not recipient_phone:
-                cust = self.client.get_resource("Customer", doc.get("customer"))
+                cust = await asyncio.to_thread(self.client.get_resource, "Customer", doc.get("customer"))
                 recipient_phone = cust.get("mobile_no") or cust.get("custom_primary_mobile_no") or cust.get("custom_alt_mobile_no")
 
             if not recipient_phone:
@@ -349,7 +352,8 @@ class CustomerQueryTools(llm.ToolContext):
             last_10 = cleaned_phone[-10:]
 
             # Resolve print format over REST
-            custom_formats_res = self.client.get_resource_list(
+            custom_formats_res = await asyncio.to_thread(
+                self.client.get_resource_list,
                 "Print Format",
                 filters=[["doc_type", "=", doctype], ["disabled", "=", 0]],
                 fields=["name"]
@@ -359,7 +363,8 @@ class CustomerQueryTools(llm.ToolContext):
             if doctype == "Sales Order":
                 print_format = "Sales Order Format"
                 if "Sales Order Format" in custom_formats:
-                    pe_list = self.client.get_resource_list(
+                    pe_list = await asyncio.to_thread(
+                        self.client.get_resource_list,
                         "Payment Entry Reference",
                         filters=[["reference_doctype", "=", "Sales Order"], ["reference_name", "=", docname], ["docstatus", "=", 1]],
                         fields=["name"]
@@ -374,7 +379,7 @@ class CustomerQueryTools(llm.ToolContext):
             pdf_link = f"{self.client.base_url}/api/method/frappe.utils.print_format.download_pdf?doctype={doctype.replace(' ', '%20')}&name={docname}&format={print_format.replace(' ', '%20')}&no_letterhead=0&letterhead=LSA&settings=%7B%7D&_lang=en/{docname}.pdf"
             message = f"Hello, here is your PDF copy of {doctype} {docname} from LSA Office."
 
-            res = self.client.send_whatsapp_message_with_file(mobile_number=last_10, message=message, file_link=pdf_link)
+            res = await asyncio.to_thread(self.client.send_whatsapp_message_with_file, mobile_number=last_10, message=message, file_link=pdf_link)
             if res.get("status"):
                 # Standard call completion doesn't block if log creation is skipped or not present
                 try:
@@ -390,7 +395,7 @@ class CustomerQueryTools(llm.ToolContext):
                         }]
                     }
                     # We can post to create a log entry if the remote server supports it
-                    self.client._post("api/resource/WhatsApp Message Log", json_data=log_data)
+                    await asyncio.to_thread(self.client._post, "api/resource/WhatsApp Message Log", json_data=log_data)
                 except Exception as log_err:
                     logger.debug(f"Could not create remote WhatsApp Message Log (probably vanilla site): {log_err}")
 
@@ -417,7 +422,7 @@ class CustomerQueryTools(llm.ToolContext):
         recipient_phone = self.phone_number
         if not recipient_phone and target_customer:
             try:
-                cust = self.client.get_resource("Customer", target_customer)
+                cust = await asyncio.to_thread(self.client.get_resource, "Customer", target_customer)
                 recipient_phone = cust.get("mobile_no") or cust.get("custom_primary_mobile_no") or cust.get("custom_alt_mobile_no")
             except Exception as e:
                 logger.error(f"Error fetching customer phone number over REST: {e}")
@@ -431,7 +436,7 @@ class CustomerQueryTools(llm.ToolContext):
         last_10 = cleaned_phone[-10:]
 
         try:
-            res = self.client.send_whatsapp_message(mobile_number=last_10, message=message.strip())
+            res = await asyncio.to_thread(self.client.send_whatsapp_message, mobile_number=last_10, message=message.strip())
             if res.get("status"):
                 logger.info(f"WhatsApp text message successfully sent to {last_10}.")
                 return f"The message has been successfully sent to WhatsApp number {last_10}."

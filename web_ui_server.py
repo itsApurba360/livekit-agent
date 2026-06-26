@@ -11,6 +11,7 @@ load_dotenv()
 
 PORT = 8080
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web_ui_static")
+AGENT_NAME = os.environ.get("LIVEKIT_AGENT_NAME") or os.environ.get("AGENT_NAME") or "outbound-caller"
 
 class WebUITesterHandler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
@@ -64,7 +65,7 @@ class WebUITesterHandler(http.server.SimpleHTTPRequestHandler):
                 room_config = api.RoomConfiguration(
                     agents=[
                         api.RoomAgentDispatch(
-                            agent_name="remote-agent-worker",
+                            agent_name=AGENT_NAME,
                             metadata=dispatch_metadata
                         )
                     ]

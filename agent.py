@@ -7,12 +7,13 @@ os.environ['SSL_CERT_FILE'] = certifi.where()
 
 import logging
 import json
+import asyncio
 from dotenv import load_dotenv
 from livekit import agents, api
 from livekit.agents import AgentSession, Agent, RoomInputOptions
-from livekit.agents.beta.tools import EndCallTool
 from livekit.plugins import openai, google, noise_cancellation
-from typing import Optional
+from dataclasses import dataclass
+from typing import Any, Optional
 
 # Import local decoupled modules
 from frappe_client import FrappeRestClient
@@ -51,6 +52,278 @@ DEFAULT_SUPPORT_VERIFIED_RULES = """- The customer is verified for WhatsApp deli
 - Do NOT repeat or mention verification, OTP, or verification status in subsequent turns. Continue helping with their request.
 - You may still use all customer query tools freely for voice answers."""
 
+
+@dataclass
+class CallContext:
+    direction: str = "web"
+    phone_number: Optional[str] = None
+    participant_identity: Optional[str] = None
+    sip_call_status: Optional[str] = None
+    sip_call_id: Optional[str] = None
+    sip_rule_id: Optional[str] = None
+    sip_trunk_id: Optional[str] = None
+    source: str = "metadata"
+    ready: bool = True
+
+    @property
+    def is_outbound(self) -> bool:
+        return self.direction == "outbound"
+
+    @property
+    def is_inbound(self) -> bool:
+        return self.direction == "inbound"
+
+
+def _load_json_dict(raw_value: Any) -> dict[str, Any]:
+    if not raw_value:
+        return {}
+    if isinstance(raw_value, dict):
+        return raw_value
+    try:
+        parsed = json.loads(raw_value)
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _normalize_direction(value: Any) -> Optional[str]:
+    if not value:
+        return None
+    normalized = str(value).strip().lower().replace("-", "_")
+    if normalized in {"outbound", "outgoing", "dial_out", "dialout", "agent_outbound"}:
+        return "outbound"
+    if normalized in {"inbound", "incoming", "pstn_inbound", "sip_inbound"}:
+        return "inbound"
+    if normalized in {"web", "browser", "mobile", "app"}:
+        return "web"
+    return None
+
+
+def _participant_attrs(participant: Any) -> dict[str, Any]:
+    attrs = getattr(participant, "attributes", None)
+    return attrs if isinstance(attrs, dict) else {}
+
+
+def _is_sip_participant(participant: Any) -> bool:
+    attrs = _participant_attrs(participant)
+    identity = str(getattr(participant, "identity", "") or "")
+    kind = str(getattr(participant, "kind", "") or "").lower()
+    return (
+        identity.startswith("sip_")
+        or "sip" in kind
+        or any(key.startswith("sip.") for key in attrs)
+    )
+
+
+def _participant_phone_number(participant: Any) -> Optional[str]:
+    attrs = _participant_attrs(participant)
+    phone_number = attrs.get("sip.phoneNumber")
+    if phone_number:
+        return str(phone_number)
+
+    identity = str(getattr(participant, "identity", "") or "")
+    if identity.startswith("sip_"):
+        return identity.replace("sip_", "", 1)
+
+    return None
+
+
+def _remote_participants(ctx: agents.JobContext) -> list[Any]:
+    participants = getattr(getattr(ctx, "room", None), "remote_participants", {}) or {}
+    return list(participants.values())
+
+
+def _find_sip_participant(ctx: agents.JobContext, participant_identity: Optional[str] = None) -> Optional[Any]:
+    for participant in _remote_participants(ctx):
+        identity = getattr(participant, "identity", None)
+        if participant_identity and identity == participant_identity:
+            return participant
+        if not participant_identity and _is_sip_participant(participant):
+            return participant
+    return None
+
+
+def _direction_from_metadata(config_dict: dict[str, Any], room_name: str) -> str:
+    for key in ("call_direction", "direction", "call_type"):
+        direction = _normalize_direction(config_dict.get(key))
+        if direction:
+            return direction
+
+    if room_name.startswith("agent_call_"):
+        return "outbound"
+
+    return "web"
+
+
+def _build_call_context(
+    ctx: agents.JobContext,
+    config_dict: dict[str, Any],
+    sip_participant: Optional[Any] = None,
+) -> CallContext:
+    room_name = getattr(ctx.room, "name", "") or ""
+    direction = _direction_from_metadata(config_dict, room_name)
+    phone_number = config_dict.get("phone_number") or config_dict.get("caller_phone")
+    source = "metadata" if phone_number else "unknown"
+
+    participant = sip_participant or _find_sip_participant(ctx)
+    if participant:
+        attrs = _participant_attrs(participant)
+        participant_phone = _participant_phone_number(participant)
+        if participant_phone:
+            phone_number = participant_phone
+            source = "sip_attributes" if attrs.get("sip.phoneNumber") else "sip_identity"
+        if attrs.get("sip.ruleID") and direction != "outbound":
+            direction = "inbound"
+        elif _is_sip_participant(participant) and direction == "web":
+            direction = "inbound"
+
+        return CallContext(
+            direction=direction,
+            phone_number=phone_number,
+            participant_identity=getattr(participant, "identity", None),
+            sip_call_status=attrs.get("sip.callStatus"),
+            sip_call_id=attrs.get("sip.callIDFull") or attrs.get("sip.callID"),
+            sip_rule_id=attrs.get("sip.ruleID"),
+            sip_trunk_id=attrs.get("sip.trunkID"),
+            source=source,
+        )
+
+    if not phone_number:
+        parts = room_name.split("_")
+        if parts and parts[0].isdigit() and len(parts[0]) >= 10:
+            phone_number = parts[0]
+            direction = "inbound"
+            source = "room_name"
+
+    return CallContext(direction=direction, phone_number=phone_number, source=source)
+
+
+async def _wait_for_sip_participant(
+    ctx: agents.JobContext,
+    participant_identity: Optional[str] = None,
+    attempts: int = 30,
+    delay_seconds: float = 0.1,
+    use_job_wait: bool = False,
+) -> Optional[Any]:
+    if use_job_wait and hasattr(ctx, "wait_for_participant"):
+        try:
+            if participant_identity:
+                participant = await ctx.wait_for_participant(identity=participant_identity)
+            else:
+                participant = await ctx.wait_for_participant()
+            if participant and _is_sip_participant(participant):
+                return participant
+        except Exception as err:
+            logger.warning("ctx.wait_for_participant did not return a SIP participant: %s", err)
+
+    for attempt in range(attempts):
+        participant = _find_sip_participant(ctx, participant_identity=participant_identity)
+        if participant:
+            logger.info("Detected SIP participant on attempt %s: %s", attempt + 1, getattr(participant, "identity", None))
+            return participant
+        await asyncio.sleep(delay_seconds)
+    return None
+
+
+def _outbound_trunk_id(config_dict: dict[str, Any]) -> Optional[str]:
+    return (
+        config_dict.get("outbound_trunk_id")
+        or config_dict.get("sip_trunk_id")
+        or agent_config.get("outbound_trunk_id")
+        or os.environ.get("LIVEKIT_OUTBOUND_TRUNK_ID")
+        or os.environ.get("SIP_OUTBOUND_TRUNK_ID")
+    )
+
+
+async def _ensure_outbound_participant(
+    ctx: agents.JobContext,
+    call_context: CallContext,
+    config_dict: dict[str, Any],
+) -> CallContext:
+    if not call_context.is_outbound:
+        return call_context
+
+    if not call_context.phone_number:
+        logger.error("Outbound call requested without phone_number metadata.")
+        ctx.shutdown(reason="Outbound call missing phone number")
+        call_context.ready = False
+        return call_context
+
+    participant_identity = call_context.participant_identity or f"sip_{call_context.phone_number}"
+    existing_participant = _find_sip_participant(ctx, participant_identity=participant_identity) or _find_sip_participant(ctx)
+    if existing_participant:
+        logger.info("Outbound SIP participant already exists: %s", getattr(existing_participant, "identity", None))
+        return _build_call_context(ctx, config_dict, sip_participant=existing_participant)
+
+    trunk_id = _outbound_trunk_id(config_dict)
+    if not trunk_id:
+        logger.error("Outbound call requested, but no outbound SIP trunk id is configured.")
+        ctx.shutdown(reason="Outbound SIP trunk not configured")
+        call_context.ready = False
+        return call_context
+
+    logger.info("Initiating outbound SIP call to %s using trunk %s.", call_context.phone_number, trunk_id)
+    try:
+        await ctx.api.sip.create_sip_participant(
+            api.CreateSIPParticipantRequest(
+                room_name=ctx.room.name,
+                sip_trunk_id=trunk_id,
+                sip_call_to=call_context.phone_number,
+                participant_identity=participant_identity,
+                wait_until_answered=True,
+            )
+        )
+    except api.TwirpError as err:
+        logger.error(
+            "Failed to create outbound SIP participant: %s SIP status: %s %s",
+            getattr(err, "message", str(err)),
+            getattr(err, "metadata", {}).get("sip_status_code"),
+            getattr(err, "metadata", {}).get("sip_status"),
+        )
+        ctx.shutdown(reason="Outbound SIP call failed")
+        call_context.ready = False
+        return call_context
+    except Exception as err:
+        logger.error("Failed to create outbound SIP participant: %s", err)
+        ctx.shutdown(reason="Outbound SIP call failed")
+        call_context.ready = False
+        return call_context
+
+    participant = await _wait_for_sip_participant(ctx, participant_identity=participant_identity, use_job_wait=True)
+    return _build_call_context(ctx, config_dict, sip_participant=participant)
+
+
+def _call_context_prompt(call_context: CallContext) -> str:
+    lines = [
+        "Call context:",
+        f"- Direction: {call_context.direction}.",
+    ]
+    if call_context.phone_number:
+        lines.append(f"- Caller/callee phone number: {call_context.phone_number}.")
+    if call_context.sip_call_status:
+        lines.append(f"- Current SIP call status: {call_context.sip_call_status}.")
+    if call_context.sip_call_id:
+        lines.append(f"- SIP call id: {call_context.sip_call_id}.")
+    if call_context.sip_rule_id:
+        lines.append(f"- Inbound SIP dispatch rule id: {call_context.sip_rule_id}.")
+    if call_context.sip_trunk_id:
+        lines.append(f"- SIP trunk id: {call_context.sip_trunk_id}.")
+
+    if call_context.is_outbound:
+        lines.append(
+            "- This is an outbound call placed by the agent. Do not speak before the callee answers or before they speak first. "
+            "On your first response after they speak, briefly introduce yourself and why you called."
+        )
+    elif call_context.is_inbound:
+        lines.append(
+            "- This is an inbound call. The user called us, so greet them as the caller and help with their request."
+        )
+    else:
+        lines.append("- This is a web or app session. Treat it like a normal customer support conversation.")
+
+    return "\n".join(lines)
+
+
 class StandaloneAgent(Agent):
     """
     Decoupled agent implementation supporting dynamically compiled instructions.
@@ -74,49 +347,27 @@ async def entrypoint(ctx: agents.JobContext):
     api_secret = os.environ.get("FRAPPE_API_SECRET")
     client = FrappeRestClient(base_url=frappe_url, api_key=api_key, api_secret=api_secret)
 
-    phone_number = None
-    config_dict = {}
+    # 1. Parse metadata. Room metadata can override dispatch metadata.
+    job_metadata = _load_json_dict(getattr(ctx.job, "metadata", None))
+    room_metadata = _load_json_dict(getattr(ctx.room, "metadata", None))
+    config_dict = {**job_metadata, **room_metadata}
 
-    # 1. Parse Job Metadata
-    try:
-        if ctx.job.metadata:
-            data = json.loads(ctx.job.metadata)
-            phone_number = data.get("phone_number")
-            config_dict = data
-    except Exception:
-        pass
+    # 2. Resolve call context before lookup so inbound SIP attributes can supply caller ID.
+    call_context = _build_call_context(ctx, config_dict)
+    if not call_context.phone_number and not call_context.is_outbound:
+        logger.info("Waiting briefly for inbound SIP participant attributes.")
+        sip_participant = await _wait_for_sip_participant(ctx)
+        call_context = _build_call_context(ctx, config_dict, sip_participant=sip_participant)
 
-    # 2. Parse Room Metadata
-    try:
-        if ctx.room.metadata:
-            data = json.loads(ctx.room.metadata)
-            if data.get("phone_number"):
-                phone_number = data.get("phone_number")
-            config_dict.update(data)
-    except Exception:
-        logger.warning("No valid JSON metadata found in Room.")
-
-    # 3. Detect Inbound SIP Participant Caller ID
-    is_inbound_call = not ctx.room.name.startswith("agent_call_")
-    if not phone_number and is_inbound_call:
-        logger.info("Inbound call detected. Waiting for SIP participant to populate...")
-        import asyncio
-        for attempt in range(30):
-            for p in ctx.room.remote_participants.values():
-                if p.identity.startswith("sip_"):
-                    phone_number = p.identity.replace("sip_", "")
-                    logger.info(f"Detected inbound SIP caller from participant identity on attempt {attempt + 1}: {phone_number}")
-                    break
-            if phone_number:
-                break
-            await asyncio.sleep(0.1)
-
-    if not phone_number:
-        # Fallback parsing from room name (e.g. 919876543210_room)
-        parts = ctx.room.name.split("_")
-        if parts and parts[0].isdigit() and len(parts[0]) >= 10:
-            phone_number = parts[0]
-            logger.info(f"Detected caller phone number from room name: {phone_number}")
+    phone_number = call_context.phone_number
+    logger.info(
+        "Resolved call context: direction=%s phone=%s participant=%s source=%s status=%s",
+        call_context.direction,
+        call_context.phone_number,
+        call_context.participant_identity,
+        call_context.source,
+        call_context.sip_call_status,
+    )
 
     # 4. Perform Lookup of Caller via REST Client
     caller_info = {"status": "Unknown", "name": "जी", "company": "हमारी कंपनी"}
@@ -155,7 +406,7 @@ async def entrypoint(ctx: agents.JobContext):
 
     # Resolve dynamic system prompt compilation
     def get_compiled_prompt(is_verified: bool = False) -> str:
-        nonlocal system_prompt_template, lead_name, company_name, customer_id
+        nonlocal system_prompt_template, lead_name, company_name, customer_id, call_context
         format_dict = {
             "lead_name": lead_name,
             "company_name": company_name,
@@ -174,6 +425,8 @@ async def entrypoint(ctx: agents.JobContext):
             prompt_base += f"\n\nThe caller is linked to Customer ID: '{customer_id}'. You can use tools (get_customer_sales_orders, get_sales_order_details, get_customer_pending_amount, get_sales_invoice_details, get_customer_details, send_text_whatsapp, send_pdf_whatsapp) to query their details. When explaining details, summarize in natural, polite Hindi/Hinglish. Do not read raw codes verbatim."
         else:
             prompt_base += "\n\nNo Customer is currently linked to this call. You can use the search_customer tool to find a customer by name or phone number."
+
+        prompt_base += f"\n\n{_call_context_prompt(call_context)}"
 
         return prompt_base
 
@@ -234,7 +487,8 @@ async def entrypoint(ctx: agents.JobContext):
         client=client,
         customer_id=customer_id,
         phone_number=phone_number,
-        on_verify_success=on_verification_success
+        on_verify_success=on_verification_success,
+        ctx=ctx
     )
 
     # Initialize Realtime AI models
@@ -258,12 +512,16 @@ async def entrypoint(ctx: agents.JobContext):
     session = AgentSession(llm=realtime_llm)
     fnc_ctx.session = session
 
-    # Initialize prebuilt call termination tool
-    end_call_tool = EndCallTool(
-        delete_room=True,
-        end_instructions="Politely say goodbye to the user in simple Hindi/Hinglish (e.g., 'अलविदा, धन्यवाद!')"
-    )
-    agent_tools = list(fnc_ctx.function_tools.values()) + list(end_call_tool.tools)
+    agent_tools = list(fnc_ctx.function_tools.values())
+
+    # For outbound PSTN, LiveKit recommends dialing and waiting for answer before
+    # starting the AgentSession so the callee does not hear a partial greeting.
+    call_context = await _ensure_outbound_participant(ctx, call_context, config_dict)
+    if not call_context.ready:
+        return
+    phone_number = call_context.phone_number
+    fnc_ctx.phone_number = phone_number
+    system_prompt = get_compiled_prompt(is_verified=fnc_ctx.is_verified)
 
     # Start LiveKit Agent Session
     agent_instance = StandaloneAgent(instructions=system_prompt, tools=agent_tools)
@@ -277,10 +535,12 @@ async def entrypoint(ctx: agents.JobContext):
     )
 
     # Greet user at startup
-    if "3.1" not in model:
+    if "3.1" not in model and not call_context.is_outbound:
         await session.generate_reply(
             instructions=f"[System Note: Introduce yourself to the customer with this greeting: '{initial_greeting}']"
         )
+    elif call_context.is_outbound:
+        logger.info("Outbound call: waiting for callee to speak before generating a reply.")
 
 
     # DTMF (keypad) Listener for OTP verification

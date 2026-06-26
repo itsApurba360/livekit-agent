@@ -370,6 +370,35 @@ class CustomerQueryToolsTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.client.sent_messages[-1]["mobile_number"], "9876543210")
         self.assertEqual(self.client.sent_messages[-1]["message"], "Your order ID is SO-001.")
 
+    async def test_end_call_delayed_shutdown(self):
+        class MockJobContext:
+            def __init__(self):
+                self.deleted = False
+                self.shutdown_reason = None
+            async def delete_room(self):
+                self.deleted = True
+            def shutdown(self, reason=None):
+                self.shutdown_reason = reason
+
+        mock_ctx = MockJobContext()
+        self.tools.ctx = mock_ctx
+
+        import asyncio
+        original_sleep = asyncio.sleep
+
+        async def mock_sleep(delay):
+            if delay > 0.1:
+                return
+            await original_sleep(delay)
+
+        with patch("asyncio.sleep", new=mock_sleep):
+            result = await self.tools.end_call()
+            self.assertIn("Call is ending", result)
+            await original_sleep(0.01)
+
+        self.assertTrue(mock_ctx.deleted)
+        self.assertEqual(mock_ctx.shutdown_reason, "Agent ended call")
+
 
 if __name__ == "__main__":
     unittest.main()

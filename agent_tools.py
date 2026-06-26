@@ -12,7 +12,7 @@ class CustomerQueryTools(llm.ToolContext):
     A standalone LLM ToolContext that implements all customer information lookup
     and WhatsApp OTP/PDF sending logic using a remote Frappe REST client instead of local ORM imports.
     """
-    def __init__(self, client: FrappeRestClient, customer_id: Optional[str] = None, phone_number: Optional[str] = None, on_verify_success: Optional[Callable] = None, session: Optional[Any] = None):
+    def __init__(self, client: FrappeRestClient, customer_id: Optional[str] = None, phone_number: Optional[str] = None, on_verify_success: Optional[Callable] = None, session: Optional[Any] = None, ctx: Optional[Any] = None):
         super().__init__(tools=[])
         self.client = client
         self.customer_id = customer_id
@@ -22,6 +22,7 @@ class CustomerQueryTools(llm.ToolContext):
         self.dtmf_buffer = ""
         self.on_verify_success = on_verify_success
         self.session = session
+        self.ctx = ctx
 
     @llm.function_tool(description="Get the list and status of sales orders for the current customer.")
     async def get_customer_sales_orders(self, customer_id: Optional[str] = None):
@@ -438,3 +439,38 @@ class CustomerQueryTools(llm.ToolContext):
         except Exception as e:
             logger.error(f"Error in send_text_whatsapp: {e}")
             return f"Error sending WhatsApp message: {str(e)}"
+
+    @llm.function_tool(description="Ends the current call immediately. Call this when the conversation is finished or the user wants to end the call.")
+    async def end_call(self):
+        """
+        """
+        logger.info("Custom end_call tool executed.")
+        ctx = getattr(self, "ctx", None)
+        session = getattr(self, "session", None)
+        if ctx:
+            import asyncio
+            async def perform_shutdown():
+                await asyncio.sleep(3.0)  # Wait 3 seconds for the final speech to play
+                try:
+                    logger.info("Custom end_call: Deleting room and shutting down job...")
+                    await ctx.delete_room()
+                    ctx.shutdown(reason="Agent ended call")
+                except Exception as e:
+                    logger.warning(f"Error during custom end_call shutdown: {e}")
+            
+            asyncio.create_task(perform_shutdown())
+            return "Call is ending. Politely say goodbye to the user now in simple Hindi/Hinglish."
+        elif session:
+            import asyncio
+            async def perform_session_shutdown():
+                await asyncio.sleep(3.0)
+                try:
+                    logger.info("Custom end_call: Shutting down agent session...")
+                    session.shutdown()
+                except Exception as e:
+                    logger.warning(f"Error during session shutdown: {e}")
+            
+            asyncio.create_task(perform_session_shutdown())
+            return "Call is ending. Politely say goodbye to the user now in simple Hindi/Hinglish."
+            
+        return "Failed to end call: context not available."

@@ -3,11 +3,14 @@ import json
 import os
 import re
 import uuid
-from datetime import datetime, timezone
+from collections import Counter
 from typing import Any, Optional
 
+from call_dashboard import dashboard_html
+from call_status_store import create_call_record, get_call_record, list_call_records, now_iso, update_call_record
 from dotenv import load_dotenv
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Query
+from fastapi.responses import HTMLResponse
 from livekit import api
 from pydantic import BaseModel, Field, field_validator
 
@@ -16,11 +19,6 @@ load_dotenv()
 AGENT_NAME = os.environ.get("LIVEKIT_AGENT_NAME") or os.environ.get("AGENT_NAME") or "outbound-caller"
 
 app = FastAPI(title="LiveKit Call Control API", version="0.1.0")
-CALL_RECORDS: dict[str, dict[str, Any]] = {}
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def _call_api_token() -> str:
@@ -41,6 +39,25 @@ def _max_purpose_chars() -> int:
         return int(os.environ.get("CALL_API_MAX_PURPOSE_CHARS", "300"))
     except ValueError:
         return 300
+
+
+def _dashboard_summary(calls: list[dict[str, Any]]) -> dict[str, Any]:
+    status_counts = Counter(call.get("status") or "unknown" for call in calls)
+    connected_statuses = {"answered", "active", "completed"}
+    live_statuses = {"dispatching", "dispatched", "dialing"}
+    return {
+        "total": len(calls),
+        "live": sum(1 for call in calls if call.get("status") in live_statuses),
+        "connected": sum(1 for call in calls if call.get("status") in connected_statuses),
+        "failures": sum(
+            1
+            for call in calls
+            if str(call.get("status") or "").startswith("failed") or call.get("status") == "dispatch_failed"
+        ),
+        "busy": sum(1 for call in calls if call.get("reason") == "busy" or call.get("status") == "failed_busy"),
+        "status_counts": dict(status_counts),
+        "generated_at": now_iso(),
+    }
 
 
 def _require_auth(authorization: Optional[str] = None) -> None:
@@ -119,6 +136,25 @@ def health() -> dict[str, bool]:
     return {"ok": True}
 
 
+@app.get("/dashboard", response_class=HTMLResponse)
+def dashboard() -> HTMLResponse:
+    return HTMLResponse(dashboard_html())
+
+
+@app.get("/dashboard/data")
+def dashboard_data(
+    limit: int = Query(default=100, ge=1, le=500),
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    _require_auth(authorization)
+    calls = list_call_records(limit=limit)
+    return {
+        "ok": True,
+        "summary": _dashboard_summary(calls),
+        "calls": calls,
+    }
+
+
 async def _dispatch_livekit_agent(room_name: str, dispatch_metadata: dict[str, Any]) -> Any:
     """Create the LiveKit room and dispatch the configured worker into it."""
     metadata_json = json.dumps(dispatch_metadata, ensure_ascii=False)
@@ -156,23 +192,29 @@ async def create_call(
     }
     dispatch_metadata = {key: value for key, value in dispatch_metadata.items() if value is not None}
 
-    CALL_RECORDS[call_id] = {
+    create_call_record({
         "call_id": call_id,
         "room_name": room_name,
         "phone_number": normalized_phone,
         "status": "dispatching",
         "metadata": dispatch_metadata,
-        "created_at": _now_iso(),
-    }
+        "created_at": now_iso(),
+        "event_message": "Call dispatch requested",
+    })
 
     try:
         await _dispatch_livekit_agent(room_name, dispatch_metadata)
     except Exception as err:
-        CALL_RECORDS[call_id]["status"] = "dispatch_failed"
-        CALL_RECORDS[call_id]["error"] = str(err)
+        update_call_record(
+            call_id,
+            status="dispatch_failed",
+            reason="dispatch_error",
+            error=str(err),
+            event_message="LiveKit agent dispatch failed",
+        )
         raise HTTPException(status_code=502, detail=f"Failed to dispatch LiveKit agent: {err}") from err
 
-    CALL_RECORDS[call_id]["status"] = "dispatched"
+    update_call_record(call_id, status="dispatched", event_message="LiveKit agent dispatched")
     return CallResponse(
         ok=True,
         call_id=call_id,
@@ -188,7 +230,7 @@ def get_call(
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
     _require_auth(authorization)
-    record = CALL_RECORDS.get(call_id)
+    record = get_call_record(call_id)
     if not record:
         raise HTTPException(status_code=404, detail="Call not found")
     return record

@@ -70,6 +70,27 @@ class HermesLiveKitPluginTestCase(unittest.TestCase):
         self.assertEqual(payload["requested_by"], "hermes")
         self.assertEqual(payload["metadata"]["source"], "hermes-plugin")
 
+    def test_get_phone_call_status_fetches_call_record(self):
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = json.dumps(
+            {
+                "call_id": "call_123",
+                "status": "failed_busy",
+                "reason": "busy",
+                "sip_status_code": "486",
+                "sip_status": "Busy Here",
+            }
+        ).encode("utf-8")
+
+        with patch("urllib.request.urlopen", return_value=response) as mock_urlopen:
+            result = json.loads(self.plugin.get_phone_call_status({"call_id": "call_123"}))
+
+        self.assertEqual(result["status"], "failed_busy")
+        self.assertEqual(result["reason"], "busy")
+        request = mock_urlopen.call_args[0][0]
+        self.assertEqual(request.full_url, "https://calls.example.com/calls/call_123")
+        self.assertEqual(request.headers["Authorization"], "Bearer test-token")
+
     def test_make_phone_call_reports_missing_config(self):
         with patch.dict(os.environ, {}, clear=True):
             result = json.loads(self.plugin.make_phone_call({"phone_number": "+919****3210", "purpose": "test"}))

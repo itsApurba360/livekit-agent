@@ -18,6 +18,7 @@ from typing import Any, Optional
 # Import local decoupled modules
 from frappe_client import FrappeRestClient
 from agent_tools import CustomerQueryTools
+from call_status_store import update_call_record
 
 # Load environment variables
 load_dotenv()
@@ -270,6 +271,108 @@ def _outbound_trunk_id(config_dict: dict[str, Any]) -> Optional[str]:
     )
 
 
+def _safe_update_call_record(call_context: CallContext, **updates: Any) -> None:
+    """Persist call status when a call_id is available, without breaking the worker."""
+    if not call_context.call_id:
+        return
+    try:
+        updated = update_call_record(call_context.call_id, **updates)
+        if not updated:
+            logger.debug("Call record %s was not found for status update", call_context.call_id)
+    except Exception as err:
+        logger.warning("Failed to update call record %s: %s", call_context.call_id, err)
+
+
+def _sip_failure_reason(
+    sip_status_code: Any = None,
+    sip_status: Any = None,
+    message: Any = None,
+) -> str:
+    """Map carrier/SIP failure details to stable API reasons."""
+    try:
+        code = int(str(sip_status_code)) if sip_status_code is not None else None
+    except (TypeError, ValueError):
+        code = None
+
+    text = " ".join(str(item or "") for item in (sip_status, message)).lower()
+    if code == 486 or "busy" in text:
+        return "busy"
+    if code == 408 or "timeout" in text or "timed out" in text:
+        return "no_answer"
+    if code == 603 or "decline" in text or "rejected" in text:
+        return "rejected"
+    if code in {480, 404, 410, 484, 604} or "unavailable" in text or "not found" in text:
+        return "unreachable"
+    if code in {401, 403, 500, 502, 503, 504} or "trunk" in text:
+        return "trunk"
+    return "sip_error"
+
+
+def _failure_status_for_reason(reason: str) -> str:
+    return {
+        "busy": "failed_busy",
+        "no_answer": "failed_no_answer",
+        "rejected": "failed_rejected",
+        "unreachable": "failed_unreachable",
+        "trunk": "failed_trunk",
+    }.get(reason, "failed")
+
+
+def _participant_matches_call(call_context: CallContext, participant: Any) -> bool:
+    identity = str(getattr(participant, "identity", "") or "")
+    if call_context.participant_identity and identity == call_context.participant_identity:
+        return True
+    participant_phone = _participant_phone_number(participant)
+    return bool(participant_phone and participant_phone == call_context.phone_number)
+
+
+def _register_call_status_handlers(ctx: agents.JobContext, call_context: CallContext) -> None:
+    """Track post-answer SIP state transitions in the SQLite call record."""
+    if not call_context.is_outbound or not call_context.call_id or not hasattr(ctx.room, "on"):
+        return
+
+    @ctx.room.on("participant_attributes_changed")
+    def on_participant_attributes_changed(changed_attributes, participant):
+        if not _participant_matches_call(call_context, participant):
+            return
+        attrs = _participant_attrs(participant)
+        sip_call_status = attrs.get("sip.callStatus") or (changed_attributes or {}).get("sip.callStatus")
+        if not sip_call_status:
+            return
+        normalized = str(sip_call_status).lower()
+        if normalized == "active":
+            status = "active"
+        elif normalized == "disconnected":
+            status = "completed"
+        else:
+            status = None
+        if status:
+            _safe_update_call_record(
+                call_context,
+                status=status,
+                participant_status=str(sip_call_status),
+                sip_call_id=attrs.get("sip.callIDFull") or attrs.get("sip.callID"),
+                participant_identity=getattr(participant, "identity", None),
+                event_message=f"SIP participant status changed to {sip_call_status}",
+            )
+
+    @ctx.room.on("participant_disconnected")
+    def on_participant_disconnected(participant):
+        if not _participant_matches_call(call_context, participant):
+            return
+        attrs = _participant_attrs(participant)
+        disconnect_reason = getattr(participant, "disconnect_reason", None)
+        _safe_update_call_record(
+            call_context,
+            status="completed",
+            reason=str(disconnect_reason) if disconnect_reason else "participant_disconnected",
+            participant_status=attrs.get("sip.callStatus") or "disconnected",
+            sip_call_id=attrs.get("sip.callIDFull") or attrs.get("sip.callID"),
+            participant_identity=getattr(participant, "identity", None),
+            event_message="SIP participant disconnected",
+        )
+
+
 async def _ensure_outbound_participant(
     ctx: agents.JobContext,
     call_context: CallContext,
@@ -280,6 +383,13 @@ async def _ensure_outbound_participant(
 
     if not call_context.phone_number:
         logger.error("Outbound call requested without phone_number metadata.")
+        _safe_update_call_record(
+            call_context,
+            status="failed",
+            reason="missing_phone_number",
+            error="Outbound call requested without phone_number metadata",
+            event_message="Outbound call failed before dialing",
+        )
         ctx.shutdown(reason="Outbound call missing phone number")
         call_context.ready = False
         return call_context
@@ -293,13 +403,26 @@ async def _ensure_outbound_participant(
     trunk_id = _outbound_trunk_id(config_dict)
     if not trunk_id:
         logger.error("Outbound call requested, but no outbound SIP trunk id is configured.")
+        _safe_update_call_record(
+            call_context,
+            status="failed_trunk",
+            reason="trunk_not_configured",
+            error="Outbound SIP trunk not configured",
+            event_message="Outbound call failed before dialing",
+        )
         ctx.shutdown(reason="Outbound SIP trunk not configured")
         call_context.ready = False
         return call_context
 
     logger.info("Initiating outbound SIP call to %s using trunk %s.", call_context.phone_number, trunk_id)
+    _safe_update_call_record(
+        call_context,
+        status="dialing",
+        event_message="Outbound SIP dialing started",
+        event_details={"trunk_id": trunk_id, "phone_number": call_context.phone_number},
+    )
     try:
-        await ctx.api.sip.create_sip_participant(
+        sip_participant_info = await ctx.api.sip.create_sip_participant(
             api.CreateSIPParticipantRequest(
                 room_name=ctx.room.name,
                 sip_trunk_id=trunk_id,
@@ -309,23 +432,61 @@ async def _ensure_outbound_participant(
             )
         )
     except api.TwirpError as err:
+        metadata = getattr(err, "metadata", {}) or {}
+        sip_status_code = metadata.get("sip_status_code")
+        sip_status = metadata.get("sip_status")
+        error_message = getattr(err, "message", str(err))
+        reason = _sip_failure_reason(sip_status_code, sip_status, error_message)
         logger.error(
             "Failed to create outbound SIP participant: %s SIP status: %s %s",
-            getattr(err, "message", str(err)),
-            getattr(err, "metadata", {}).get("sip_status_code"),
-            getattr(err, "metadata", {}).get("sip_status"),
+            error_message,
+            sip_status_code,
+            sip_status,
+        )
+        _safe_update_call_record(
+            call_context,
+            status=_failure_status_for_reason(reason),
+            reason=reason,
+            sip_status_code=sip_status_code,
+            sip_status=sip_status,
+            error=error_message,
+            event_message="Outbound SIP call failed",
         )
         ctx.shutdown(reason="Outbound SIP call failed")
         call_context.ready = False
         return call_context
     except Exception as err:
         logger.error("Failed to create outbound SIP participant: %s", err)
+        _safe_update_call_record(
+            call_context,
+            status="failed",
+            reason="worker_error",
+            error=str(err),
+            event_message="Outbound SIP call failed",
+        )
         ctx.shutdown(reason="Outbound SIP call failed")
         call_context.ready = False
         return call_context
 
+    _safe_update_call_record(
+        call_context,
+        status="answered",
+        sip_call_id=getattr(sip_participant_info, "sip_call_id", None),
+        event_message="Outbound SIP call answered",
+    )
+
     participant = await _wait_for_sip_participant(ctx, participant_identity=participant_identity, use_job_wait=True)
-    return _build_call_context(ctx, config_dict, sip_participant=participant)
+    updated_context = _build_call_context(ctx, config_dict, sip_participant=participant)
+    if participant:
+        _safe_update_call_record(
+            updated_context,
+            status="active",
+            participant_identity=getattr(participant, "identity", None),
+            participant_status=updated_context.sip_call_status,
+            sip_call_id=updated_context.sip_call_id,
+            event_message="SIP participant active in room",
+        )
+    return updated_context
 
 
 def _call_context_prompt(call_context: CallContext) -> str:
@@ -626,6 +787,7 @@ async def entrypoint(ctx: agents.JobContext):
     phone_number = call_context.phone_number
     fnc_ctx.phone_number = phone_number
     system_prompt = get_compiled_prompt(is_verified=fnc_ctx.is_verified)
+    _register_call_status_handlers(ctx, call_context)
 
     # Start LiveKit Agent Session
     nc_option = noise_cancellation.BVCTelephony() if agent_config.get("noise_cancellation", False) else None

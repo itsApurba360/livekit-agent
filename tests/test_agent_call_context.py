@@ -362,6 +362,42 @@ class AgentCallContextTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx.api.sip.requests[0].kwargs["sip_trunk_id"], "ST_OUTBOUND")
         self.assertTrue(ctx.api.sip.requests[0].kwargs["wait_until_answered"])
 
+    def test_sip_failure_reason_maps_common_outcomes(self):
+        self.assertEqual(agent._sip_failure_reason("486", "Busy Here"), "busy")
+        self.assertEqual(agent._sip_failure_reason("480", "Temporarily Unavailable"), "unreachable")
+        self.assertEqual(agent._sip_failure_reason("408", "Request Timeout"), "no_answer")
+        self.assertEqual(agent._sip_failure_reason("603", "Decline"), "rejected")
+
+    async def test_ensure_outbound_participant_records_busy_status(self):
+        ctx = FakeContext(FakeRoom(name="agent_call_abc123"))
+        config = {"phone_number": "+919876543210", "outbound_trunk_id": "ST_OUTBOUND"}
+        call_context = agent.CallContext(
+            direction="outbound",
+            phone_number="+919876543210",
+            call_id="call_123",
+        )
+
+        async def fail_with_busy(_request):
+            raise agent.api.TwirpError(
+                "callee busy",
+                metadata={"sip_status_code": "486", "sip_status": "Busy Here"},
+            )
+
+        ctx.api.sip.create_sip_participant = fail_with_busy
+        with patch.object(agent, "update_call_record", return_value=True) as mock_update:
+            updated_context = await agent._ensure_outbound_participant(ctx, call_context, config)
+
+        self.assertFalse(updated_context.ready)
+        self.assertEqual(ctx.shutdown_reason, "Outbound SIP call failed")
+        statuses = [call.kwargs.get("status") for call in mock_update.call_args_list]
+        self.assertIn("dialing", statuses)
+        self.assertIn("failed_busy", statuses)
+        failure_update = mock_update.call_args_list[-1]
+        self.assertEqual(failure_update.args[0], "call_123")
+        self.assertEqual(failure_update.kwargs["reason"], "busy")
+        self.assertEqual(failure_update.kwargs["sip_status_code"], "486")
+        self.assertEqual(failure_update.kwargs["sip_status"], "Busy Here")
+
     async def test_ensure_outbound_participant_shuts_down_without_trunk(self):
         ctx = FakeContext(FakeRoom(name="agent_call_abc123"))
         call_context = agent.CallContext(direction="outbound", phone_number="+919876543210")

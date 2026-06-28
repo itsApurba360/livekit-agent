@@ -37,6 +37,11 @@ Use `--host 0.0.0.0` only when another device must reach the API over LAN/VPN/tu
 ```bash
 curl -s http://127.0.0.1:8000/health
 ```
+Open the local call-status dashboard after the API is running:
+```bash
+open http://127.0.0.1:8000/dashboard
+```
+Paste `CALL_API_TOKEN` in the dashboard; the page fetches protected data from `GET /dashboard/data`.
 
 ### Running the Web UI Sandbox Tester
 ```bash
@@ -77,8 +82,10 @@ Tests use Python's `unittest` framework (despite `pytest` in dev dependencies). 
 | `frappe_client.py` | `FrappeRestClient`: pure REST client using Token auth. Methods: `lookup_caller`, `get_resource`, `get_resource_list`, `send_whatsapp_message*` |
 | `agent_config.json` | Runtime config: provider/model/voice, agent personas (prompts + direction-specific greetings), noise_cancellation, custom_tts |
 | `web_ui_server.py` | Minimal HTTP server serving static web tester; mints LiveKit tokens and dispatches the agent into test rooms |
-| `call_api.py` | FastAPI call-control service for Hermes/external AI: validates bearer auth, normalizes/limits phone numbers, creates LiveKit rooms, and dispatches the outbound worker |
-| `integrations/hermes/livekit-caller/` | Hermes plugin exposing `make_phone_call`; install under `~/.hermes/plugins/livekit-caller` and enable with `hermes plugins enable livekit-caller` |
+| `call_api.py` | FastAPI call-control service for Hermes/external AI: validates bearer auth, normalizes/limits phone numbers, persists call records, serves the dashboard, creates LiveKit rooms, and dispatches the outbound worker |
+| `call_status_store.py` | SQLite persistence layer for outbound call records and event history (`call_control.sqlite3` by default; override with `CALL_API_DB_PATH`) |
+| `call_dashboard.py` | Self-contained HTML/CSS/JS dashboard rendered by `GET /dashboard`; data loads from authenticated `GET /dashboard/data` |
+| `integrations/hermes/livekit-caller/` | Hermes plugin exposing `make_phone_call` and `get_phone_call_status`; install under `~/.hermes/plugins/livekit-caller` and enable with `hermes plugins enable livekit-caller` |
 
 ### Key Architectural Patterns
 
@@ -97,11 +104,13 @@ Direction determines greeting selection and behavioral rules injected into the s
 - WhatsApp delivery (`send_text_whatsapp`, `send_pdf_whatsapp`) requires prior `send_verification_otp` + `verify_otp` (spoken or DTMF via `sip_dtmf_received`).
 - On success, `on_verification_success` callback updates the live prompt and confirms via a one-time system note.
 
-**Outbound SIP Dialing**: For outbound calls, `_ensure_outbound_participant` uses `ctx.api.sip.create_sip_participant` (with `wait_until_answered=True`) before starting the `AgentSession`. The callee must speak first; the agent waits.
+**Outbound SIP Dialing and Status Tracking**: For outbound calls, `_ensure_outbound_participant` uses `ctx.api.sip.create_sip_participant` (with `wait_until_answered=True`) before starting the `AgentSession`. The callee must speak first; the agent waits. The worker updates the SQLite call record as the SIP leg progresses (`dialing`, `answered` / `active`, `completed`, or failures such as `failed_busy`, `failed_unreachable`, `failed_no_answer`, `failed_rejected`, `failed_trunk`). Raw SIP status code/text is preserved when LiveKit returns it.
 
-**Hermes Call Control**: `call_api.py` is the boundary for Hermes and other external AI agents. It requires `Authorization: Bearer $CALL_API_TOKEN`, accepts `POST /calls`, creates a room named `agent_call_<call_id>`, embeds outbound metadata (phone, purpose, requested_by, agent_type), and dispatches the LiveKit worker. Hermes only needs `LIVEKIT_CALL_API_URL` and `LIVEKIT_CALL_API_TOKEN`; it must not receive `LIVEKIT_API_SECRET`.
+**Hermes Call Control**: `call_api.py` is the boundary for Hermes and other external AI agents. It requires `Authorization: Bearer <CALL_API_TOKEN>`, accepts `POST /calls`, creates a room named `agent_call_<call_id>`, embeds outbound metadata (phone, purpose, requested_by, agent_type), persists status in SQLite, and dispatches the LiveKit worker. Hermes only needs `LIVEKIT_CALL_API_URL` and `LIVEKIT_CALL_API_TOKEN`; it must not receive `LIVEKIT_API_SECRET`.
 
-**Hermes Plugin Lifecycle**: Hermes discovers user plugins from `~/.hermes/plugins/<name>/`, not arbitrary repo-relative paths unless project plugins are explicitly enabled. Copy or symlink `integrations/hermes/livekit-caller` to `~/.hermes/plugins/livekit-caller`, run `hermes plugins enable livekit-caller`, configure `LIVEKIT_CALL_API_URL` / `LIVEKIT_CALL_API_TOKEN`, then restart Hermes or start a new session before expecting `make_phone_call` to appear.
+**Call Status Dashboard**: `GET /dashboard` serves a browser UI with summary cards, recent calls, SIP status, and per-call event timelines. The UI asks for `CALL_API_TOKEN` and fetches data from authenticated `GET /dashboard/data`. This is intended for local/operator visibility; do not expose it publicly without HTTPS and the same bearer-auth protections as `/calls`.
+
+**Hermes Plugin Lifecycle**: Hermes discovers user plugins from `~/.hermes/plugins/<name>/`, not arbitrary repo-relative paths unless project plugins are explicitly enabled. Copy or symlink `integrations/hermes/livekit-caller` to `~/.hermes/plugins/livekit-caller`, run `hermes plugins enable livekit-caller`, configure `LIVEKIT_CALL_API_URL` / `LIVEKIT_CALL_API_TOKEN`, then restart Hermes or start a new session before expecting `make_phone_call` and `get_phone_call_status` to appear.
 
 **Provider Flexibility**: Supports `Google` (Gemini realtime) and `OpenAI` (realtime). OpenAI can optionally use a custom Gemini TTS via `google.beta.GeminiTTS` while keeping OpenAI for the LLM. Provider/model/voice are read from `agent_config.json` at startup.
 
@@ -119,10 +128,11 @@ Direction determines greeting selection and behavioral rules injected into the s
 
 ### Data Flow (Hermes-Initiated Outbound Example)
 1. Hermes calls `make_phone_call` → plugin posts to `call_api.py` `/calls`
-2. `call_api.py` authenticates `CALL_API_TOKEN`, validates allowed country prefixes, creates a LiveKit room, and dispatches `outbound-caller`
+2. `call_api.py` authenticates `CALL_API_TOKEN`, validates allowed country prefixes, creates the SQLite call record, creates a LiveKit room, and dispatches `outbound-caller`
 3. `agent.py` reads metadata, resolves outbound call context, optionally looks up the phone in Frappe, and calls `_ensure_outbound_participant`
-4. LiveKit SIP sends the PSTN INVITE using `OUTBOUND_TRUNK_ID` (`ST_...` trunk ID)
+4. `agent.py` updates the SQLite status record while LiveKit SIP sends the PSTN INVITE using `OUTBOUND_TRUNK_ID` (`ST_...` trunk ID)
 5. After the callee answers and speaks first, the realtime agent starts the voice conversation
+6. Hermes can call `get_phone_call_status(call_id)` or an operator can open `/dashboard` to inspect the latest status and event timeline
 
 ## Configuration
 
@@ -131,7 +141,7 @@ Direction determines greeting selection and behavioral rules injected into the s
 - Frappe: `FRAPPE_SITE_URL`, `FRAPPE_API_KEY`, `FRAPPE_API_SECRET`
 - AI: `GOOGLE_API_KEY` or `OPENAI_API_KEY`
 - Telephony (outbound): `OUTBOUND_TRUNK_ID`, `VOBIZ_SIP_DOMAIN`, `DEFAULT_TRANSFER_NUMBER`
-- Call-control API: `CALL_API_TOKEN`, `CALL_API_ALLOWED_COUNTRY_PREFIXES`, `CALL_API_DEFAULT_COUNTRY_CODE`, `CALL_API_MAX_PURPOSE_CHARS`
+- Call-control API: `CALL_API_TOKEN`, `CALL_API_ALLOWED_COUNTRY_PREFIXES`, `CALL_API_DEFAULT_COUNTRY_CODE`, `CALL_API_MAX_PURPOSE_CHARS`, optional `CALL_API_DB_PATH` / `CALL_STATUS_DB_PATH`
 - Hermes plugin/client: `LIVEKIT_CALL_API_URL`, `LIVEKIT_CALL_API_TOKEN` (same value as `CALL_API_TOKEN` on the API service)
 
 `OUTBOUND_TRUNK_ID` must be the LiveKit SIP trunk ID from LiveKit Cloud → Telephony → SIP trunks (for example `ST_...`), **not** a phone number. Restart the worker after changing any `.env` value it consumes.
@@ -151,8 +161,10 @@ Direction determines greeting selection and behavioral rules injected into the s
 - PDF sending resolves a print format (prefers "Sales Order with payment details" when a Payment Entry exists) and constructs a Frappe download URL.
 - All tool responses are natural language strings intended for voice; raw JSON/IDs are summarized.
 - For local call-control testing, run both the worker (`uv run agent.py start`) and API (`uv run uvicorn call_api:app --host 127.0.0.1 --port 8000`) with `.env` loaded.
+- The call API and worker must share the same SQLite path for status updates. Locally this is the repo-root `call_control.sqlite3`; in separate containers/hosts, set `CALL_API_DB_PATH` to a shared mounted path or replace SQLite with a networked store/callback.
+- `/calls/{call_id}` returns the persisted record plus event history. `/dashboard/data` returns recent records and summary counts. Both require bearer auth; `/dashboard` serves only the static UI shell.
 - To stop local call-control services, terminate the terminals or run `pkill -f "uvicorn call_api:app"` and `pkill -f "agent.py start"`.
-- SIP failure `object cannot be found` usually means `OUTBOUND_TRUNK_ID` is wrong; SIP `486 Busy Here` means the trunk/carrier/phone rejected the INVITE even though dispatch worked.
+- SIP failure `object cannot be found` usually means `OUTBOUND_TRUNK_ID` is wrong; SIP `486 Busy Here` maps to `failed_busy`; `480 Temporarily Unavailable` maps best-effort to `failed_unreachable`; `408 Request Timeout` maps to `failed_no_answer`. Carriers do not always distinguish switched-off vs out-of-coverage.
 - Frappe lookup failures (for example local `127.0.0.1:8002` refused) fall back to an unknown lead and do not by themselves block outbound dialing.
 
 ## Deployment

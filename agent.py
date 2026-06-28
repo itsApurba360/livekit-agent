@@ -45,7 +45,6 @@ DEFAULT_SUPPORT_UNVERIFIED_RULES = """- The current call is linked to a register
 - Do NOT ask for verification at the start of the call or for voice-only queries.
 - WhatsApp verification is ONLY required when the customer asks to receive information via WhatsApp (text details such as order ID, balance, customer name, or a PDF copy of a Sales Order or Sales Invoice).
 - When the customer asks for WhatsApp delivery, you MUST call `send_verification_otp` immediately. Do not ask for permission first.
-- CRITICAL: You are NOT allowed to say you sent a code without executing `send_verification_otp` first. Only after the tool returns success, say: "मैंने आपके व्हाट्सएप पर एक वेरिफिकेशन कोड भेजा है। कृपया मुझे वह कोड बताएं या अपने फोन कीपैड पर टाइप करें।"
 - When they speak the code, call `verify_otp` to check if it matches. Only after successful verification, call `send_text_whatsapp` for text details or `send_pdf_whatsapp` for PDF documents.
 - If the customer is not registered on WhatsApp (indicated by the `send_verification_otp` tool), ask them to provide a valid WhatsApp number."""
 

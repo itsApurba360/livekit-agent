@@ -5,7 +5,7 @@
   "voice": "coral",
   "company_name": "LSA Office",
   "noise_cancellation": true,
-  "custom_tts": true,
+  "custom_tts": false,
   "custom_tts_voice": "Aoede",
   "support_agent": {
     "name": "Kavya",

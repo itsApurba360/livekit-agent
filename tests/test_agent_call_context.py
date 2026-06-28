@@ -202,22 +202,55 @@ class AgentCallContextTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(call_context.sip_rule_id, "SDR_123")
 
     def test_builds_outbound_context_from_agent_call_room(self):
-        ctx = FakeContext(FakeRoom(name="agent_call_abc123"), metadata='{"phone_number": "+919876543210"}')
+        ctx = FakeContext(FakeRoom(name="agent_call_abc123"), metadata='{"phone_number": "+919****3210"}')
         config = agent._load_json_dict(ctx.job.metadata)
 
         call_context = agent._build_call_context(ctx, config)
 
         self.assertEqual(call_context.direction, "outbound")
-        self.assertEqual(call_context.phone_number, "+919876543210")
+        self.assertEqual(call_context.phone_number, "+919****3210")
+
+    def test_builds_outbound_context_with_call_purpose_metadata(self):
+        ctx = FakeContext(
+            FakeRoom(name="agent_call_abc123"),
+            metadata=(
+                '{"phone_number": "+919****3210", '
+                '"call_id": "call_abc123", '
+                '"call_purpose": "Follow up on ERPNext implementation enquiry", '
+                '"requested_by": "hermes"}'
+            ),
+        )
+        config = agent._load_json_dict(ctx.job.metadata)
+
+        call_context = agent._build_call_context(ctx, config)
+
+        self.assertEqual(call_context.direction, "outbound")
+        self.assertEqual(call_context.call_id, "call_abc123")
+        self.assertEqual(call_context.call_purpose, "Follow up on ERPNext implementation enquiry")
+        self.assertEqual(call_context.requested_by, "hermes")
 
     def test_outbound_prompt_waits_for_callee_first(self):
-        call_context = agent.CallContext(direction="outbound", phone_number="+919876543210")
+        call_context = agent.CallContext(direction="outbound", phone_number="+919****3210")
 
         prompt = agent._call_context_prompt(call_context)
 
         self.assertIn("Direction: outbound", prompt)
         self.assertIn("Callee phone number", prompt)
         self.assertIn("Do not speak before the callee answers or before they speak first", prompt)
+
+    def test_outbound_prompt_includes_call_purpose_and_requester(self):
+        call_context = agent.CallContext(
+            direction="outbound",
+            phone_number="+919****3210",
+            call_purpose="Follow up on ERPNext implementation enquiry",
+            requested_by="hermes",
+        )
+
+        prompt = agent._call_context_prompt(call_context)
+
+        self.assertIn("Call purpose: Follow up on ERPNext implementation enquiry", prompt)
+        self.assertIn("Requested by: hermes", prompt)
+        self.assertIn("Use the call purpose", prompt)
 
     def test_inbound_prompt_prevents_outbound_call_framing(self):
         call_context = agent.CallContext(direction="inbound", phone_number="+919876543210")
@@ -291,6 +324,21 @@ class AgentCallContextTestCase(unittest.IsolatedAsyncioTestCase):
     def test_outbound_trunk_uses_documented_env_name(self):
         with patch.dict(agent.os.environ, {"OUTBOUND_TRUNK_ID": "ST_ENV"}, clear=False):
             self.assertEqual(agent._outbound_trunk_id({}), "ST_ENV")
+
+    def test_agent_type_from_metadata_accepts_sales_and_support(self):
+        self.assertEqual(agent._agent_type_from_metadata("sales"), "Sales")
+        self.assertEqual(agent._agent_type_from_metadata("lead"), "Sales")
+        self.assertEqual(agent._agent_type_from_metadata("nandini"), "Sales")
+        self.assertEqual(agent._agent_type_from_metadata("support"), "Support")
+        self.assertEqual(agent._agent_type_from_metadata("customer"), "Support")
+        self.assertEqual(agent._agent_type_from_metadata("kavya"), "Support")
+        self.assertIsNone(agent._agent_type_from_metadata("unknown"))
+
+    def test_select_agent_type_honors_metadata_override(self):
+        self.assertEqual(agent._select_agent_type({"agent_type": "sales"}, "Customer"), "Sales")
+        self.assertEqual(agent._select_agent_type({"agent_type": "support"}, "Unknown"), "Support")
+        self.assertEqual(agent._select_agent_type({}, "Customer"), "Support")
+        self.assertEqual(agent._select_agent_type({}, "Lead"), "Sales")
 
     async def test_ensure_outbound_participant_dials_with_trunk_and_waits(self):
         ctx = FakeContext(FakeRoom(name="agent_call_abc123"))

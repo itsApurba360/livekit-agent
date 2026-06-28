@@ -14,9 +14,12 @@ dependencies = [
     "requests",
     "python-dotenv",
     "certifi",
+    "fastapi",
+    "uvicorn[standard]",
 ]
 
 [dependency-groups]
 dev = [
     "pytest",
+    "httpx",
 ]

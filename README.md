@@ -108,6 +108,53 @@ This project includes a Dockerfile configured for deployment on containerized pl
 
 For live deployment IDs, dashboard links, and redeploy commands, see [docs/dokploy.md](docs/dokploy.md). AI agents should use the `dokploy-mcp` MCP server when present (see that doc).
 
+### Local Call Control Test for Hermes / External AI
+
+Before deploying a public API, verify the call-control flow locally with two local processes.
+
+1. Start the LiveKit worker:
+
+```bash
+uv run agent.py start
+```
+
+2. In another terminal, start the call-control API using the same `.env` LiveKit credentials:
+
+```bash
+CALL_API_TOKEN=local-test-token \
+CALL_API_ALLOWED_COUNTRY_PREFIXES=+91 \
+CALL_API_DEFAULT_COUNTRY_CODE=+91 \
+uv run uvicorn call_api:app --host 127.0.0.1 --port 8000
+```
+
+3. Health-check the API:
+
+```bash
+curl -s http://127.0.0.1:8000/health
+```
+
+Expected response:
+
+```json
+{"ok":true}
+```
+
+4. After the worker and API are both running, trigger exactly one approved local test call:
+
+```bash
+curl -X POST "http://127.0.0.1:8000/calls" \
+  -H "Authorization: Bearer $CALL_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "phone_number": "+919****1141",
+    "purpose": "Local integration test call from Hermes setup",
+    "agent_type": "sales",
+    "requested_by": "manual-local-test"
+  }'
+```
+
+See [docs/hermes-call-control.md](docs/hermes-call-control.md) for Hermes plugin wiring.
+
 ### Deployment Steps on Docploy:
 
 1. **Create a New Application**: Select Dockerfile deployment in Docploy.

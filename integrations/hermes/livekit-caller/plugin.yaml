@@ -1,0 +1,8 @@
+name: livekit-caller
+version: "0.1.0"
+description: Call phone numbers through the LiveKit voice agent call-control API
+provides_tools:
+  - make_phone_call
+requires_env:
+  - LIVEKIT_CALL_API_URL
+  - LIVEKIT_CALL_API_TOKEN

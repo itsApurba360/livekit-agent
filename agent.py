@@ -64,6 +64,9 @@ class CallContext:
     sip_trunk_id: Optional[str] = None
     source: str = "metadata"
     ready: bool = True
+    call_id: Optional[str] = None
+    call_purpose: Optional[str] = None
+    requested_by: Optional[str] = None
 
     @property
     def is_outbound(self) -> bool:
@@ -155,6 +158,24 @@ def _direction_from_metadata(config_dict: dict[str, Any], room_name: str) -> str
     return "web"
 
 
+def _agent_type_from_metadata(value: Any) -> Optional[str]:
+    if not value:
+        return None
+    normalized = str(value).strip().lower()
+    if normalized in {"support", "customer", "kavya"}:
+        return "Support"
+    if normalized in {"sales", "lead", "nandini"}:
+        return "Sales"
+    return None
+
+
+def _select_agent_type(config_dict: dict[str, Any], caller_status: Any) -> str:
+    metadata_agent_type = _agent_type_from_metadata(config_dict.get("agent_type"))
+    if metadata_agent_type:
+        return metadata_agent_type
+    return "Support" if caller_status == "Customer" else "Sales"
+
+
 def _build_call_context(
     ctx: agents.JobContext,
     config_dict: dict[str, Any],
@@ -164,6 +185,9 @@ def _build_call_context(
     direction = _direction_from_metadata(config_dict, room_name)
     phone_number = config_dict.get("phone_number") or config_dict.get("caller_phone")
     source = "metadata" if phone_number else "unknown"
+    call_id = config_dict.get("call_id")
+    call_purpose = config_dict.get("call_purpose") or config_dict.get("purpose")
+    requested_by = config_dict.get("requested_by") or config_dict.get("source")
 
     participant = sip_participant or _find_sip_participant(ctx)
     if participant:
@@ -186,6 +210,9 @@ def _build_call_context(
             sip_rule_id=attrs.get("sip.ruleID"),
             sip_trunk_id=attrs.get("sip.trunkID"),
             source=source,
+            call_id=call_id,
+            call_purpose=call_purpose,
+            requested_by=requested_by,
         )
 
     if not phone_number:
@@ -195,7 +222,14 @@ def _build_call_context(
             direction = "inbound"
             source = "room_name"
 
-    return CallContext(direction=direction, phone_number=phone_number, source=source)
+    return CallContext(
+        direction=direction,
+        phone_number=phone_number,
+        source=source,
+        call_id=call_id,
+        call_purpose=call_purpose,
+        requested_by=requested_by,
+    )
 
 
 async def _wait_for_sip_participant(
@@ -314,12 +348,19 @@ def _call_context_prompt(call_context: CallContext) -> str:
         lines.append(f"- Inbound SIP dispatch rule id: {call_context.sip_rule_id}.")
     if call_context.sip_trunk_id:
         lines.append(f"- SIP trunk id: {call_context.sip_trunk_id}.")
+    if call_context.call_id:
+        lines.append(f"- Call id: {call_context.call_id}.")
+    if call_context.call_purpose:
+        lines.append(f"- Call purpose: {call_context.call_purpose}.")
+    if call_context.requested_by:
+        lines.append(f"- Requested by: {call_context.requested_by}.")
 
     if call_context.is_outbound:
         lines.append(
             "- This is an outbound call placed by LSA Office. The customer or lead did not call us in this session. "
             "Do not speak before the callee answers or before they speak first. On your first response after they speak, "
-            "briefly introduce yourself, LSA Office, and the reason for calling."
+            "briefly introduce yourself, LSA Office, and the reason for calling. Use the call purpose above as the reason "
+            "when it is present; do not invent a different reason."
         )
     elif call_context.is_inbound:
         lines.append(
@@ -430,7 +471,7 @@ async def entrypoint(ctx: agents.JobContext):
     lead_name = caller_info.get("name", "जी")
     company_name = caller_info.get("company", "हमारी कंपनी")
 
-    agent_type = "Support" if caller_status == "Customer" else "Sales"
+    agent_type = _select_agent_type(config_dict, caller_status)
     logger.info(f"Launching agent type: {agent_type} (Caller status: {caller_status})")
 
     # Fetch configuration templates

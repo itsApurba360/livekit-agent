@@ -7,6 +7,7 @@ from collections import Counter
 from typing import Any, Optional
 
 from call_dashboard import dashboard_html
+from call_outcomes import failure_status_for_reason, sip_failure_reason
 from call_status_store import create_call_record, get_call_record, list_call_records, now_iso, update_call_record
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, Query
@@ -129,6 +130,11 @@ class CallResponse(BaseModel):
     room_name: str
     status: str
     phone_number: str
+    reason: Optional[str] = None
+    sip_status_code: Optional[str] = None
+    sip_status: Optional[str] = None
+    sip_call_id: Optional[str] = None
+    error: Optional[str] = None
 
 
 @app.get("/health")
@@ -155,7 +161,7 @@ def dashboard_data(
     }
 
 
-async def _dispatch_livekit_agent(room_name: str, dispatch_metadata: dict[str, Any]) -> Any:
+async def _create_room_and_dispatch_agent(room_name: str, dispatch_metadata: dict[str, Any]) -> Any:
     """Create the LiveKit room and dispatch the configured worker into it."""
     metadata_json = json.dumps(dispatch_metadata, ensure_ascii=False)
     async with api.LiveKitAPI() as lk:
@@ -169,6 +175,53 @@ async def _dispatch_livekit_agent(room_name: str, dispatch_metadata: dict[str, A
         )
 
 
+_dispatch_livekit_agent = _create_room_and_dispatch_agent
+
+
+def _outbound_trunk_id(config_dict: Optional[dict[str, Any]] = None) -> Optional[str]:
+    config_dict = config_dict or {}
+    return (
+        config_dict.get("outbound_trunk_id")
+        or config_dict.get("sip_trunk_id")
+        or os.environ.get("OUTBOUND_TRUNK_ID")
+        or os.environ.get("LIVEKIT_OUTBOUND_TRUNK_ID")
+        or os.environ.get("SIP_OUTBOUND_TRUNK_ID")
+    )
+
+
+async def _create_outbound_sip_participant(
+    *,
+    room_name: str,
+    phone_number: str,
+    participant_identity: str,
+    config_dict: Optional[dict[str, Any]] = None,
+) -> Any:
+    """Create the outbound SIP participant and wait for an answer/failure."""
+    trunk_id = _outbound_trunk_id(config_dict)
+    if not trunk_id:
+        raise RuntimeError("Outbound SIP trunk not configured")
+
+    async with api.LiveKitAPI() as lk:
+        return await lk.sip.create_sip_participant(
+            api.CreateSIPParticipantRequest(
+                room_name=room_name,
+                sip_trunk_id=trunk_id,
+                sip_call_to=phone_number,
+                participant_identity=participant_identity,
+                wait_until_answered=True,
+            )
+        )
+
+
+async def _delete_room_quietly(room_name: str) -> None:
+    """Best-effort cleanup for rooms left idle after API-owned dial failures."""
+    try:
+        async with api.LiveKitAPI() as lk:
+            await lk.room.delete_room(api.DeleteRoomRequest(room=room_name))
+    except Exception:
+        pass
+
+
 @app.post("/calls", response_model=CallResponse)
 async def create_call(
     request: CallRequest,
@@ -178,11 +231,14 @@ async def create_call(
     normalized_phone = normalize_phone_number(request.phone_number)
     call_id = f"call_{uuid.uuid4().hex[:12]}"
     room_name = f"agent_call_{call_id}"
+    participant_identity = f"sip_{normalized_phone}"
     dispatch_metadata = {
         **request.metadata,
         "call_id": call_id,
         "call_direction": "outbound",
+        "outbound_dial_mode": "api",
         "phone_number": normalized_phone,
+        "sip_participant_identity": participant_identity,
         "call_purpose": request.purpose,
         "requested_by": request.requested_by,
         "agent_type": request.agent_type,
@@ -198,12 +254,13 @@ async def create_call(
         "phone_number": normalized_phone,
         "status": "dispatching",
         "metadata": dispatch_metadata,
+        "participant_identity": participant_identity,
         "created_at": now_iso(),
         "event_message": "Call dispatch requested",
     })
 
     try:
-        await _dispatch_livekit_agent(room_name, dispatch_metadata)
+        await _create_room_and_dispatch_agent(room_name, dispatch_metadata)
     except Exception as err:
         update_call_record(
             call_id,
@@ -215,12 +272,76 @@ async def create_call(
         raise HTTPException(status_code=502, detail=f"Failed to dispatch LiveKit agent: {err}") from err
 
     update_call_record(call_id, status="dispatched", event_message="LiveKit agent dispatched")
+
+    try:
+        sip_info = await _create_outbound_sip_participant(
+            room_name=room_name,
+            phone_number=normalized_phone,
+            participant_identity=participant_identity,
+            config_dict=dispatch_metadata,
+        )
+    except api.TwirpError as err:
+        metadata = getattr(err, "metadata", {}) or {}
+        sip_status_code = metadata.get("sip_status_code")
+        sip_status = metadata.get("sip_status")
+        error_message = getattr(err, "message", None) or getattr(err, "msg", None) or str(err)
+        reason = sip_failure_reason(sip_status_code, sip_status, error_message)
+        status = failure_status_for_reason(reason)
+        update_call_record(
+            call_id,
+            status=status,
+            reason=reason,
+            sip_status_code=sip_status_code,
+            sip_status=sip_status,
+            error=error_message,
+            event_message="Outbound SIP call failed",
+        )
+        await _delete_room_quietly(room_name)
+        return CallResponse(
+            ok=False,
+            call_id=call_id,
+            room_name=room_name,
+            status=status,
+            phone_number=normalized_phone,
+            reason=reason,
+            sip_status_code=str(sip_status_code) if sip_status_code is not None else None,
+            sip_status=sip_status,
+            error=error_message,
+        )
+    except Exception as err:
+        update_call_record(
+            call_id,
+            status="failed",
+            reason="api_dial_error",
+            error=str(err),
+            event_message="Outbound SIP call failed",
+        )
+        await _delete_room_quietly(room_name)
+        return CallResponse(
+            ok=False,
+            call_id=call_id,
+            room_name=room_name,
+            status="failed",
+            phone_number=normalized_phone,
+            reason="api_dial_error",
+            error=str(err),
+        )
+
+    sip_call_id = getattr(sip_info, "sip_call_id", None)
+    update_call_record(
+        call_id,
+        status="answered",
+        sip_call_id=sip_call_id,
+        participant_identity=participant_identity,
+        event_message="Outbound SIP call answered",
+    )
     return CallResponse(
         ok=True,
         call_id=call_id,
         room_name=room_name,
-        status="dispatched",
+        status="answered",
         phone_number=normalized_phone,
+        sip_call_id=sip_call_id,
     )
 
 

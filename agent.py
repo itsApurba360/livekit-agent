@@ -18,7 +18,8 @@ from typing import Any, Optional
 # Import local decoupled modules
 from frappe_client import FrappeRestClient
 from agent_tools import CustomerQueryTools
-from call_status_store import update_call_record
+from call_outcomes import failure_status_for_reason, sip_failure_reason
+from call_status_store import get_call_record, update_call_record
 
 # Load environment variables
 load_dotenv()
@@ -271,6 +272,10 @@ def _outbound_trunk_id(config_dict: dict[str, Any]) -> Optional[str]:
     )
 
 
+def _dialed_by_api(config_dict: dict[str, Any]) -> bool:
+    return str(config_dict.get("outbound_dial_mode") or "").strip().lower() == "api"
+
+
 def _safe_update_call_record(call_context: CallContext, **updates: Any) -> None:
     """Persist call status when a call_id is available, without breaking the worker."""
     if not call_context.call_id:
@@ -283,39 +288,28 @@ def _safe_update_call_record(call_context: CallContext, **updates: Any) -> None:
         logger.warning("Failed to update call record %s: %s", call_context.call_id, err)
 
 
+def _call_record_has_failure_status(call_context: CallContext) -> bool:
+    if not call_context.call_id:
+        return False
+    try:
+        record = get_call_record(call_context.call_id)
+    except Exception as err:
+        logger.warning("Failed to read call record %s before status update: %s", call_context.call_id, err)
+        return False
+    status = str((record or {}).get("status") or "")
+    return status.startswith("failed") or status == "dispatch_failed"
+
+
 def _sip_failure_reason(
     sip_status_code: Any = None,
     sip_status: Any = None,
     message: Any = None,
 ) -> str:
-    """Map carrier/SIP failure details to stable API reasons."""
-    try:
-        code = int(str(sip_status_code)) if sip_status_code is not None else None
-    except (TypeError, ValueError):
-        code = None
-
-    text = " ".join(str(item or "") for item in (sip_status, message)).lower()
-    if code == 486 or "busy" in text:
-        return "busy"
-    if code == 408 or "timeout" in text or "timed out" in text:
-        return "no_answer"
-    if code == 603 or "decline" in text or "rejected" in text:
-        return "rejected"
-    if code in {480, 404, 410, 484, 604} or "unavailable" in text or "not found" in text:
-        return "unreachable"
-    if code in {401, 403, 500, 502, 503, 504} or "trunk" in text:
-        return "trunk"
-    return "sip_error"
+    return sip_failure_reason(sip_status_code, sip_status, message)
 
 
 def _failure_status_for_reason(reason: str) -> str:
-    return {
-        "busy": "failed_busy",
-        "no_answer": "failed_no_answer",
-        "rejected": "failed_rejected",
-        "unreachable": "failed_unreachable",
-        "trunk": "failed_trunk",
-    }.get(reason, "failed")
+    return failure_status_for_reason(reason)
 
 
 def _participant_matches_call(call_context: CallContext, participant: Any) -> bool:
@@ -359,6 +353,9 @@ def _register_call_status_handlers(ctx: agents.JobContext, call_context: CallCon
     @ctx.room.on("participant_disconnected")
     def on_participant_disconnected(participant):
         if not _participant_matches_call(call_context, participant):
+            return
+        if _call_record_has_failure_status(call_context):
+            logger.info("Preserving failure status for call %s after participant disconnect", call_context.call_id)
             return
         attrs = _participant_attrs(participant)
         disconnect_reason = getattr(participant, "disconnect_reason", None)
@@ -487,6 +484,70 @@ async def _ensure_outbound_participant(
             event_message="SIP participant active in room",
         )
     return updated_context
+
+
+async def _wait_for_api_dialed_outbound_participant(
+    ctx: agents.JobContext,
+    call_context: CallContext,
+    config_dict: dict[str, Any],
+) -> CallContext:
+    if not call_context.is_outbound:
+        return call_context
+
+    participant_identity = (
+        config_dict.get("sip_participant_identity")
+        or call_context.participant_identity
+        or (f"sip_{call_context.phone_number}" if call_context.phone_number else None)
+    )
+    participant = await _wait_for_sip_participant(
+        ctx,
+        participant_identity=participant_identity,
+        use_job_wait=True,
+    )
+    for _attempt in range(90):
+        if participant:
+            sip_status = str(_participant_attrs(participant).get("sip.callStatus") or "").strip().lower()
+            if sip_status == "active":
+                break
+            if sip_status == "disconnected":
+                participant = None
+                break
+        await asyncio.sleep(1)
+        participant = _find_sip_participant(ctx, participant_identity=participant_identity)
+
+    if not participant or str(_participant_attrs(participant).get("sip.callStatus") or "").strip().lower() != "active":
+        logger.error("API-dialed outbound call did not get SIP participant: %s", participant_identity)
+        _safe_update_call_record(
+            call_context,
+            status="failed",
+            reason="missing_sip_participant",
+            error="API-dialed outbound call did not get SIP participant",
+            event_message="Outbound SIP participant did not join",
+        )
+        ctx.shutdown(reason="Outbound SIP participant did not join")
+        call_context.ready = False
+        return call_context
+
+    updated_context = _build_call_context(ctx, config_dict, sip_participant=participant)
+    _safe_update_call_record(
+        updated_context,
+        status="active",
+        participant_identity=getattr(participant, "identity", None),
+        participant_status=updated_context.sip_call_status,
+        sip_call_id=updated_context.sip_call_id,
+        event_message="API-dialed SIP participant active in room",
+    )
+    return updated_context
+
+
+async def _prepare_outbound_participant(
+    ctx: agents.JobContext,
+    call_context: CallContext,
+    config_dict: dict[str, Any],
+) -> CallContext:
+    if call_context.is_outbound and _dialed_by_api(config_dict):
+        return await _wait_for_api_dialed_outbound_participant(ctx, call_context, config_dict)
+    return await _ensure_outbound_participant(ctx, call_context, config_dict)
 
 
 def _call_context_prompt(call_context: CallContext) -> str:
@@ -781,7 +842,7 @@ async def entrypoint(ctx: agents.JobContext):
 
     # For outbound PSTN, LiveKit recommends dialing and waiting for answer before
     # starting the AgentSession so the callee does not hear a partial greeting.
-    call_context = await _ensure_outbound_participant(ctx, call_context, config_dict)
+    call_context = await _prepare_outbound_participant(ctx, call_context, config_dict)
     if not call_context.ready:
         return
     phone_number = call_context.phone_number
@@ -792,16 +853,19 @@ async def entrypoint(ctx: agents.JobContext):
     # Start LiveKit Agent Session
     nc_option = noise_cancellation.BVCTelephony() if agent_config.get("noise_cancellation", False) else None
     agent_instance = StandaloneAgent(instructions=system_prompt, tools=agent_tools)
+    room_options_kwargs = {
+        "audio_input": AudioInputOptions(
+            noise_cancellation=nc_option,
+        ),
+        "close_on_disconnect": True,
+        "delete_room_on_close": True,
+    }
+    if call_context.participant_identity:
+        room_options_kwargs["participant_identity"] = call_context.participant_identity
     await session.start(
         room=ctx.room,
         agent=agent_instance,
-        room_options=RoomOptions(
-            audio_input=AudioInputOptions(
-                noise_cancellation=nc_option,
-            ),
-            close_on_disconnect=True,
-            delete_room_on_close=True,
-        ),
+        room_options=RoomOptions(**room_options_kwargs),
     )
 
     # Greet user at startup

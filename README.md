@@ -112,18 +112,19 @@ For live deployment IDs, dashboard links, and redeploy commands, see [docs/dokpl
 
 Before deploying a public API, verify the call-control flow locally with two local processes.
 
-1. Start the LiveKit worker:
+1. Start the LiveKit worker with a local-only dispatch name:
 
 ```bash
-uv run agent.py start
+LIVEKIT_AGENT_NAME=outbound-caller-local uv run agent.py start
 ```
 
-2. In another terminal, start the call-control API using the same `.env` LiveKit credentials:
+2. In another terminal, start the call-control API using the same `.env` LiveKit credentials and dispatch name. The API owns room creation, worker dispatch, SIP dialing, and the immediate answered/failed status result:
 
 ```bash
 CALL_API_TOKEN=local-test-token \
 CALL_API_ALLOWED_COUNTRY_PREFIXES=+91 \
 CALL_API_DEFAULT_COUNTRY_CODE=+91 \
+LIVEKIT_AGENT_NAME=outbound-caller-local \
 uv run uvicorn call_api:app --host 127.0.0.1 --port 8000
 ```
 
@@ -153,7 +154,7 @@ curl -X POST "http://127.0.0.1:8000/calls" \
   }'
 ```
 
-See [docs/hermes-call-control.md](docs/hermes-call-control.md) for Hermes plugin wiring.
+`POST /calls` returns the immediate dial outcome, such as `answered`, `failed_busy`, `failed_no_answer`, `failed_unreachable`, `failed_rejected`, or `failed_trunk`. See [docs/hermes-call-control.md](docs/hermes-call-control.md) for Hermes plugin wiring and the local/Dokploy/LiveKit Cloud worker-name matrix.
 
 ### Deployment Steps on Docploy:
 

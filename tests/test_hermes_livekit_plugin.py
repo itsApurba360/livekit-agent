@@ -43,8 +43,9 @@ class HermesLiveKitPluginTestCase(unittest.TestCase):
                 "ok": True,
                 "call_id": "call_123",
                 "room_name": "agent_call_call_123",
-                "status": "dispatched",
-                "phone_number": "+919****3210",
+                "status": "answered",
+                "sip_call_id": "sip-call-123",
+                "phone_number": "+919876543210",
             }
         ).encode("utf-8")
 
@@ -52,7 +53,7 @@ class HermesLiveKitPluginTestCase(unittest.TestCase):
             result = json.loads(
                 self.plugin.make_phone_call(
                     {
-                        "phone_number": "+919****3210",
+                        "phone_number": "+919876543210",
                         "purpose": "Follow up on ERPNext implementation enquiry",
                         "agent_type": "sales",
                     }
@@ -64,11 +65,42 @@ class HermesLiveKitPluginTestCase(unittest.TestCase):
         self.assertEqual(request.full_url, "https://calls.example.com/calls")
         self.assertEqual(request.headers["Authorization"], "Bearer test-token")
         payload = json.loads(request.data.decode("utf-8"))
-        self.assertEqual(payload["phone_number"], "+919****3210")
+        self.assertEqual(payload["phone_number"], "+919876543210")
         self.assertEqual(payload["purpose"], "Follow up on ERPNext implementation enquiry")
         self.assertEqual(payload["agent_type"], "sales")
         self.assertEqual(payload["requested_by"], "hermes")
         self.assertEqual(payload["metadata"]["source"], "hermes-plugin")
+
+    def test_make_phone_call_passes_through_immediate_failure_response(self):
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = json.dumps(
+            {
+                "ok": False,
+                "call_id": "call_123",
+                "room_name": "agent_call_call_123",
+                "status": "failed_busy",
+                "reason": "busy",
+                "sip_status_code": "486",
+                "sip_status": "Busy Here",
+                "phone_number": "+919876543210",
+            }
+        ).encode("utf-8")
+
+        with patch("urllib.request.urlopen", return_value=response):
+            result = json.loads(
+                self.plugin.make_phone_call(
+                    {
+                        "phone_number": "+919876543210",
+                        "purpose": "Follow up on ERPNext implementation enquiry",
+                    }
+                )
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "failed_busy")
+        self.assertEqual(result["reason"], "busy")
+        self.assertEqual(result["sip_status_code"], "486")
+        self.assertEqual(result["sip_status"], "Busy Here")
 
     def test_get_phone_call_status_fetches_call_record(self):
         response = MagicMock()
@@ -93,7 +125,7 @@ class HermesLiveKitPluginTestCase(unittest.TestCase):
 
     def test_make_phone_call_reports_missing_config(self):
         with patch.dict(os.environ, {}, clear=True):
-            result = json.loads(self.plugin.make_phone_call({"phone_number": "+919****3210", "purpose": "test"}))
+            result = json.loads(self.plugin.make_phone_call({"phone_number": "+919876543210", "purpose": "test"}))
 
         self.assertFalse(result["ok"])
         self.assertIn("LIVEKIT_CALL_API_URL", result["error"])

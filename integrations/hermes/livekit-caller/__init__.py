@@ -11,7 +11,9 @@ import urllib.request
 MAKE_PHONE_CALL_SCHEMA = {
     "name": "make_phone_call",
     "description": (
-        "Place an outbound phone call through the deployed LiveKit voice agent. "
+        "Place an outbound phone call through the deployed LiveKit call-control API. "
+        "The API returns the immediate dial outcome, such as answered, failed_busy, "
+        "failed_no_answer, failed_unreachable, failed_rejected, or failed_trunk. "
         "Use this only when the user explicitly asks to call someone or after they confirm a call. "
         "Requires a phone number and a short purpose/reason for the call."
     ),
@@ -107,7 +109,7 @@ def make_phone_call(args: dict, **kwargs) -> str:
     )
 
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with urllib.request.urlopen(request, timeout=75) as response:
             return response.read().decode("utf-8")
     except urllib.error.HTTPError as err:
         body = err.read().decode("utf-8", errors="replace")

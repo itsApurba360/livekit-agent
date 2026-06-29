@@ -71,6 +71,30 @@ Reload Cursor after adding. Optional: limit tools with `DOKPLOY_ENABLED_TAGS=pro
 | Auto-deploy   | enabled (on git push)                         |
 | Inbound ports | none (worker connects outbound to LiveKit)    |
 
+## Call Control API Rollout Status
+
+The call-control API should be verified locally before creating a Dokploy API app. In the current outbound-only architecture, `call_api.py` owns room creation, worker dispatch, SIP dialing with `wait_until_answered=True`, exact SIP failure mapping, SQLite status, and the dashboard. The worker (`agent.py`) receives `outbound_dial_mode=api`, waits for the API-created SIP participant, and then handles only the conversation.
+
+Use distinct `LIVEKIT_AGENT_NAME` values per environment to avoid ambiguous LiveKit dispatch:
+
+- `outbound-caller-local` for local testing
+- `outbound-caller-dokploy` for Dokploy testing/staging
+- `outbound-caller-prod` for the production LiveKit Cloud worker
+
+Local verification uses:
+
+- Worker: `LIVEKIT_AGENT_NAME=outbound-caller-local uv run agent.py start`
+- API: `LIVEKIT_AGENT_NAME=outbound-caller-local uv run uvicorn call_api:app --host 127.0.0.1 --port 8000`
+- Test call target approved by the user: `+919062371141`
+
+After local verification passes, create a second Dokploy application for the API with command:
+
+```bash
+uv run uvicorn call_api:app --host 0.0.0.0 --port 8000
+```
+
+Expose only the API app over HTTPS. Keep the worker app private/no inbound port. Do not expose LiveKit credentials to Hermes; Hermes should only receive `LIVEKIT_CALL_API_URL` and `LIVEKIT_CALL_API_TOKEN`. If the Dokploy API should dispatch the LiveKit Cloud production worker, set the API app's `LIVEKIT_AGENT_NAME` to `outbound-caller-prod`.
+
 ## Environment Variables
 
 Set in Dokploy application settings (values live in local `.env`, not in git):
@@ -86,6 +110,11 @@ Set in Dokploy application settings (values live in local `.env`, not in git):
 - `OUTBOUND_TRUNK_ID` (optional)
 - `VOBIZ_SIP_DOMAIN` (optional)
 - `DEFAULT_TRANSFER_NUMBER` (optional)
+- `CALL_API_TOKEN` (call-control API only, when API app is deployed)
+- `CALL_API_ALLOWED_COUNTRY_PREFIXES` (optional, default `+91`)
+- `LIVEKIT_AGENT_NAME` (recommended: `outbound-caller-dokploy` for Dokploy worker testing or `outbound-caller-prod` when dispatching a LiveKit Cloud production worker)
+
+For a LiveKit Cloud worker deployment, use `LIVEKIT_AGENT_NAME=outbound-caller-prod` and configure only the worker-side Frappe/model secrets there. LiveKit Cloud injects its own LiveKit connection credentials for the worker; the Dokploy Call API still needs LiveKit credentials because it creates rooms, dispatches the worker, and creates SIP participants.
 
 ## Agent Config (runtime)
 

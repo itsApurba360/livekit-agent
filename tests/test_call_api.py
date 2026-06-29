@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
+import asyncio
 import os
 import tempfile
+import types
 import unittest
 from unittest.mock import patch
 
@@ -85,6 +87,49 @@ class CallApiTestCase(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 422)
 
+    def test_outbound_trunk_id_reads_documented_env_name(self):
+        with patch.dict(os.environ, {"OUTBOUND_TRUNK_ID": "ST_TEST"}, clear=False):
+            self.assertEqual(self.call_api._outbound_trunk_id({}), "ST_TEST")
+
+    def test_outbound_trunk_id_required_for_api_dial(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertIsNone(self.call_api._outbound_trunk_id({}))
+
+    def test_create_outbound_sip_participant_uses_trunk_and_waits(self):
+        captured = {}
+
+        class FakeSip:
+            async def create_sip_participant(self, request):
+                captured["request"] = request
+                return types.SimpleNamespace(sip_call_id="sip-call-123")
+
+        class FakeLiveKitAPI:
+            def __init__(self):
+                self.sip = FakeSip()
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return None
+
+        with patch.dict(os.environ, {"OUTBOUND_TRUNK_ID": "ST_TEST"}, clear=False), \
+             patch("call_api.api.LiveKitAPI", FakeLiveKitAPI):
+            info = asyncio.run(
+                self.call_api._create_outbound_sip_participant(
+                    room_name="agent_call_call_123",
+                    phone_number="+919876543210",
+                    participant_identity="sip_+919876543210",
+                )
+            )
+
+        self.assertEqual(info.sip_call_id, "sip-call-123")
+        self.assertEqual(captured["request"].sip_trunk_id, "ST_TEST")
+        self.assertEqual(captured["request"].room_name, "agent_call_call_123")
+        self.assertEqual(captured["request"].sip_call_to, "+919876543210")
+        self.assertEqual(captured["request"].participant_identity, "sip_+919876543210")
+        self.assertTrue(captured["request"].wait_until_answered)
+
     def test_call_endpoint_dispatches_livekit_agent_with_outbound_metadata(self):
         captured = {}
 
@@ -93,7 +138,12 @@ class CallApiTestCase(unittest.TestCase):
             captured["metadata"] = metadata
             return object()
 
-        with patch("call_api._dispatch_livekit_agent", new=fake_dispatch):
+        async def fake_sip_dial(**kwargs):
+            captured["sip_dial"] = kwargs
+            return types.SimpleNamespace(sip_call_id="sip-call-123")
+
+        with patch("call_api._create_room_and_dispatch_agent", new=fake_dispatch), \
+             patch("call_api._create_outbound_sip_participant", new=fake_sip_dial):
             response = self.client.post(
                 "/calls",
                 headers={"Authorization": "Bearer test-token"},
@@ -110,11 +160,15 @@ class CallApiTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertTrue(body["ok"])
+        self.assertEqual(body["status"], "answered")
+        self.assertEqual(body["sip_call_id"], "sip-call-123")
         self.assertEqual(body["phone_number"], "+919876543210")
         self.assertTrue(body["room_name"].startswith("agent_call_call_"))
         self.assertEqual(captured["room_name"], body["room_name"])
         self.assertEqual(captured["metadata"]["call_direction"], "outbound")
+        self.assertEqual(captured["metadata"]["outbound_dial_mode"], "api")
         self.assertEqual(captured["metadata"]["phone_number"], "+919876543210")
+        self.assertEqual(captured["metadata"]["sip_participant_identity"], "sip_+919876543210")
         self.assertEqual(
             captured["metadata"]["call_purpose"],
             "Follow up on ERPNext implementation enquiry",
@@ -123,6 +177,9 @@ class CallApiTestCase(unittest.TestCase):
         self.assertEqual(captured["metadata"]["customer_name"], "Pankaj")
         self.assertEqual(captured["metadata"]["requested_by"], "hermes")
         self.assertEqual(captured["metadata"]["source"], "hermes-test")
+        self.assertEqual(captured["sip_dial"]["room_name"], body["room_name"])
+        self.assertEqual(captured["sip_dial"]["phone_number"], body["phone_number"])
+        self.assertEqual(captured["sip_dial"]["participant_identity"], "sip_+919876543210")
 
         status_response = self.client.get(
             f"/calls/{body['call_id']}",
@@ -131,10 +188,11 @@ class CallApiTestCase(unittest.TestCase):
         self.assertEqual(status_response.status_code, 200)
         status_body = status_response.json()
         self.assertEqual(status_body["call_id"], body["call_id"])
-        self.assertEqual(status_body["status"], "dispatched")
+        self.assertEqual(status_body["status"], "answered")
+        self.assertEqual(status_body["sip_call_id"], "sip-call-123")
         self.assertEqual(status_body["phone_number"], body["phone_number"])
         self.assertEqual(status_body["metadata"]["source"], "hermes-test")
-        self.assertGreaterEqual(len(status_body["events"]), 2)
+        self.assertGreaterEqual(len(status_body["events"]), 3)
 
         dashboard_response = self.client.get(
             "/dashboard/data?limit=10",
@@ -144,9 +202,59 @@ class CallApiTestCase(unittest.TestCase):
         dashboard_body = dashboard_response.json()
         self.assertTrue(dashboard_body["ok"])
         self.assertEqual(dashboard_body["summary"]["total"], 1)
-        self.assertEqual(dashboard_body["summary"]["status_counts"]["dispatched"], 1)
+        self.assertEqual(dashboard_body["summary"]["status_counts"]["answered"], 1)
         self.assertEqual(dashboard_body["calls"][0]["call_id"], body["call_id"])
         self.assertEqual(dashboard_body["calls"][0]["event_count"], len(status_body["events"]))
+
+    def test_call_endpoint_returns_busy_when_sip_reports_486(self):
+        async def fake_dispatch(room_name, metadata):
+            return object()
+
+        async def fake_sip_dial(**kwargs):
+            raise self.call_api.api.TwirpError(
+                "unavailable",
+                "callee busy",
+                status=500,
+                metadata={"sip_status_code": "486", "sip_status": "Busy Here"},
+            )
+
+        async def fake_delete_room(room_name):
+            return None
+
+        with patch("call_api._create_room_and_dispatch_agent", new=fake_dispatch), \
+             patch("call_api._create_outbound_sip_participant", new=fake_sip_dial), \
+             patch("call_api._delete_room_quietly", new=fake_delete_room):
+            response = self.client.post(
+                "/calls",
+                headers={"Authorization": "Bearer test-token"},
+                json={"phone_number": "9876543210", "purpose": "Follow up"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertFalse(body["ok"])
+        self.assertEqual(body["status"], "failed_busy")
+        self.assertEqual(body["reason"], "busy")
+        self.assertEqual(body["sip_status_code"], "486")
+        self.assertEqual(body["sip_status"], "Busy Here")
+
+        status_response = self.client.get(
+            f"/calls/{body['call_id']}",
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(status_response.status_code, 200)
+        status_body = status_response.json()
+        self.assertEqual(status_body["status"], "failed_busy")
+        self.assertEqual(status_body["reason"], "busy")
+        self.assertEqual(status_body["sip_status_code"], "486")
+
+        dashboard_response = self.client.get(
+            "/dashboard/data?limit=10",
+            headers={"Authorization": "Bearer test-token"},
+        )
+        dashboard_body = dashboard_response.json()
+        self.assertEqual(dashboard_body["summary"]["failures"], 1)
+        self.assertEqual(dashboard_body["summary"]["busy"], 1)
 
     def test_call_status_endpoint_returns_404_for_unknown_call(self):
         response = self.client.get(

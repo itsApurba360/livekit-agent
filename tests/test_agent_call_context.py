@@ -202,19 +202,19 @@ class AgentCallContextTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(call_context.sip_rule_id, "SDR_123")
 
     def test_builds_outbound_context_from_agent_call_room(self):
-        ctx = FakeContext(FakeRoom(name="agent_call_abc123"), metadata='{"phone_number": "+919****3210"}')
+        ctx = FakeContext(FakeRoom(name="agent_call_abc123"), metadata='{"phone_number": "+919876543210"}')
         config = agent._load_json_dict(ctx.job.metadata)
 
         call_context = agent._build_call_context(ctx, config)
 
         self.assertEqual(call_context.direction, "outbound")
-        self.assertEqual(call_context.phone_number, "+919****3210")
+        self.assertEqual(call_context.phone_number, "+919876543210")
 
     def test_builds_outbound_context_with_call_purpose_metadata(self):
         ctx = FakeContext(
             FakeRoom(name="agent_call_abc123"),
             metadata=(
-                '{"phone_number": "+919****3210", '
+                '{"phone_number": "+919876543210", '
                 '"call_id": "call_abc123", '
                 '"call_purpose": "Follow up on ERPNext implementation enquiry", '
                 '"requested_by": "hermes"}'
@@ -230,7 +230,7 @@ class AgentCallContextTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(call_context.requested_by, "hermes")
 
     def test_outbound_prompt_waits_for_callee_first(self):
-        call_context = agent.CallContext(direction="outbound", phone_number="+919****3210")
+        call_context = agent.CallContext(direction="outbound", phone_number="+919876543210")
 
         prompt = agent._call_context_prompt(call_context)
 
@@ -241,7 +241,7 @@ class AgentCallContextTestCase(unittest.IsolatedAsyncioTestCase):
     def test_outbound_prompt_includes_call_purpose_and_requester(self):
         call_context = agent.CallContext(
             direction="outbound",
-            phone_number="+919****3210",
+            phone_number="+919876543210",
             call_purpose="Follow up on ERPNext implementation enquiry",
             requested_by="hermes",
         )
@@ -361,6 +361,29 @@ class AgentCallContextTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(ctx.api.sip.requests), 1)
         self.assertEqual(ctx.api.sip.requests[0].kwargs["sip_trunk_id"], "ST_OUTBOUND")
         self.assertTrue(ctx.api.sip.requests[0].kwargs["wait_until_answered"])
+
+    async def test_api_dialed_outbound_waits_for_existing_sip_participant_without_dialing(self):
+        ctx = FakeContext(FakeRoom(name="agent_call_abc123"))
+        config = {
+            "phone_number": "+919876543210",
+            "outbound_dial_mode": "api",
+            "sip_participant_identity": "sip_+919876543210",
+        }
+        call_context = agent.CallContext(direction="outbound", phone_number="+919876543210")
+
+        async def add_participant_after_wait(_delay):
+            ctx.room.remote_participants["sip_+919876543210"] = FakeParticipant(
+                identity="sip_+919876543210",
+                attributes={"sip.phoneNumber": "+919876543210", "sip.callStatus": "active"},
+            )
+
+        with patch.object(agent.asyncio, "sleep", new=add_participant_after_wait):
+            updated_context = await agent._prepare_outbound_participant(ctx, call_context, config)
+
+        self.assertIsNone(ctx.shutdown_reason)
+        self.assertTrue(updated_context.ready)
+        self.assertEqual(updated_context.sip_call_status, "active")
+        self.assertEqual(ctx.api.sip.requests, [])
 
     def test_sip_failure_reason_maps_common_outcomes(self):
         self.assertEqual(agent._sip_failure_reason("486", "Busy Here"), "busy")

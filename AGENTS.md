@@ -112,6 +112,8 @@ Direction determines greeting selection and behavioral rules injected into the s
 
 **Call Status Dashboard**: `GET /dashboard` serves a browser UI with summary cards, recent calls, SIP status, and per-call event timelines. The UI asks for `CALL_API_TOKEN` and fetches data from authenticated `GET /dashboard/data`. This is intended for local/operator visibility; do not expose it publicly without HTTPS and the same bearer-auth protections as `/calls`.
 
+**Transcript and Recording Sources**: Transcript/session-report data should come from LiveKit (for example the LiveKit Agents session report/history posted back by the worker after call end). The operator-facing call recording URL should come from the Vobiz API, not LiveKit egress, unless this decision is explicitly changed. Vobiz credentials must stay on the Call API side; Hermes should only receive Call API URL/token values.
+
 **Hermes Plugin Lifecycle**: Hermes discovers user plugins from `~/.hermes/plugins/<name>/`, not arbitrary repo-relative paths unless project plugins are explicitly enabled. Copy or symlink `integrations/hermes/livekit-caller` to `~/.hermes/plugins/livekit-caller`, run `hermes plugins enable livekit-caller`, configure `LIVEKIT_CALL_API_URL` / `LIVEKIT_CALL_API_TOKEN`, then restart Hermes or start a new session before expecting `make_phone_call` and `get_phone_call_status` to appear.
 
 **Provider Flexibility**: Supports `Google` (Gemini realtime) and `OpenAI` (realtime). OpenAI can optionally use a custom Gemini TTS via `google.beta.GeminiTTS` while keeping OpenAI for the LLM. Provider/model/voice are read from `agent_config.json` at startup.
@@ -144,6 +146,7 @@ Direction determines greeting selection and behavioral rules injected into the s
 - Frappe: `FRAPPE_SITE_URL`, `FRAPPE_API_KEY`, `FRAPPE_API_SECRET`
 - AI: `GOOGLE_API_KEY` or `OPENAI_API_KEY`
 - Telephony (outbound): `OUTBOUND_TRUNK_ID`, `VOBIZ_SIP_DOMAIN`, `DEFAULT_TRANSFER_NUMBER`
+- Recording lookup: Vobiz recording API endpoint/credentials when implemented; keep them non-committed and expose only derived recording URLs through the Call API
 - Call-control API: `CALL_API_TOKEN`, `CALL_API_ALLOWED_COUNTRY_PREFIXES`, `CALL_API_DEFAULT_COUNTRY_CODE`, `CALL_API_MAX_PURPOSE_CHARS`, optional `CALL_API_DB_PATH` / `CALL_STATUS_DB_PATH`
 - Hermes plugin/client: `LIVEKIT_CALL_API_URL`, `LIVEKIT_CALL_API_TOKEN` (same value as `CALL_API_TOKEN` on the API service)
 
@@ -167,6 +170,7 @@ Direction determines greeting selection and behavioral rules injected into the s
 - With API-owned dialing, `POST /calls` is intentionally blocking until answer/failure and returns the immediate SIP setup outcome. Keep client timeouts long enough for ringing/no-answer.
 - The call API owns final SIP failure status. Worker disconnect handlers should not overwrite `failed_*` records with `completed` after a rejected/busy/no-answer leg.
 - The call API stores SQLite status. Locally this is the repo-root `call_control.sqlite3`; in separate containers/hosts or LiveKit Cloud worker deployments, use the API/dashboard store as the source of truth and add a networked store/callback before relying on worker-side status writes.
+- Transcript/recording storage is implemented in the Call API status database: the worker posts LiveKit session history to `/internal/calls/{call_id}/session-report`, and recording URLs come from Vobiz API callback/polling fields. Store large transcript/recording payloads outside SQLite if they grow; SQLite keeps source fields and pointers/URLs.
 - `/calls/{call_id}` returns the persisted record plus event history. `/dashboard/data` returns recent records and summary counts. Both require bearer auth; `/dashboard` serves only the static UI shell.
 - To stop local call-control services, terminate the terminals or run `pkill -f "uvicorn call_api:app"` and `pkill -f "agent.py start"`.
 - SIP failure `object cannot be found` usually means `OUTBOUND_TRUNK_ID` is wrong; SIP `486 Busy Here` maps to `failed_busy`; `480 Temporarily Unavailable` maps best-effort to `failed_unreachable`; `408 Request Timeout` maps to `failed_no_answer`. Carriers do not always distinguish switched-off vs out-of-coverage.

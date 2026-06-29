@@ -113,6 +113,7 @@ Set in Dokploy application settings (values live in local `.env`, not in git):
 - `CALL_API_TOKEN` (call-control API only, when API app is deployed)
 - `CALL_API_ALLOWED_COUNTRY_PREFIXES` (optional, default `+91`)
 - `LIVEKIT_AGENT_NAME` (recommended: `outbound-caller-dokploy` for Dokploy worker testing or `outbound-caller-prod` when dispatching a LiveKit Cloud production worker)
+- Recording lookup settings for the Call API app only: `VOBIZ_API_BASE_URL`, `VOBIZ_AUTH_ID`, `VOBIZ_AUTH_TOKEN`, plus optional `VOBIZ_RECORDING_FORMAT` / `VOBIZ_RECORDING_CHANNEL_TYPE`. The recording URL source is Vobiz; transcript/session-report source is LiveKit.
 
 For a LiveKit Cloud worker deployment, use `LIVEKIT_AGENT_NAME=outbound-caller-prod` and configure only the worker-side Frappe/model secrets there. LiveKit Cloud injects its own LiveKit connection credentials for the worker; the Dokploy Call API still needs LiveKit credentials because it creates rooms, dispatches the worker, and creates SIP participants.
 

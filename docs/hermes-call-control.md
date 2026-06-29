@@ -173,9 +173,14 @@ GOOGLE_API_KEY: <optional>
 
 LiveKit Cloud injects LiveKit connection credentials for the worker deployment; do not manually set those as LiveKit Cloud worker secrets.
 
-## Future transcript/session-report callback
+## Transcript and recording metadata
 
-The call-flow refactor does not store transcripts yet. Future work should add an internal endpoint such as:
+The Call API now stores LiveKit transcript/session-report payloads and Vobiz recording metadata in the call status database. The source split is:
+
+- **Transcript / session report:** LiveKit. The worker should collect the LiveKit Agents session report/history at call end and POST it back to the Call API.
+- **Call recording URL:** Vobiz API. Do not use LiveKit egress as the primary source for the operator-facing recording URL unless this decision changes.
+
+The worker posts to this internal endpoint after the callee disconnects:
 
 ```text
 POST /internal/calls/{call_id}/session-report
@@ -187,11 +192,29 @@ Planned payload shape:
 ```json
 {
   "room_name": "agent_call_call_xxx",
-  "report": "ctx.make_session_report().to_dict()"
+  "transcript_source": "livekit",
+  "report": "ctx.make_session_report().to_dict()",
+  "recording_source": "vobiz",
+  "recording_url": "https://..."
 }
 ```
 
-Recording/transcript files should be stored outside SQLite; SQLite should keep metadata, status, and report pointers.
+Recording/transcript payloads should be stored outside SQLite when they grow large. SQLite keeps metadata, status, source fields (`livekit` / `vobiz`), transcript text, session report JSON, and report/recording pointers.
+
+The Vobiz recording lookup should be implemented behind the Call API using non-committed environment variables for the Vobiz recording endpoint and credentials. Hermes should continue to call only the authenticated Call API and should not receive Vobiz credentials directly.
+
+Vobiz docs requirements for recording URLs:
+
+- Base URL: `https://api.vobiz.ai/api/v1`
+- Auth headers: `X-Auth-ID`, `X-Auth-Token`, and `Content-Type: application/json`
+- Active-call recording start endpoint: `POST /Account/{auth_id}/Call/{call_uuid}/Record/`
+- Recording list endpoint: `GET /Account/{auth_id}/Recording/?call_uuid={call_uuid}`
+- Single recording endpoint: `GET /Account/{auth_id}/Recording/{recording_id}/`
+- Recording callback field to store when available: `record_url`
+- Recommended callback URL shape: `/internal/vobiz/recording-callback?token={internal_token}&call_id={call_id}`
+- Recording object field to store when polling/listing: `recording_url`
+
+The implementation therefore needs the Vobiz `call_uuid` for the PSTN leg. If Vobiz trunk webhooks are not configured to give us that UUID, the Call API should correlate after call end by searching Vobiz CDRs for the outbound number/time window and then cross-reference `CDR.uuid` with `Recording.call_uuid`.
 
 ## Safety
 

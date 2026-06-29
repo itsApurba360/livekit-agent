@@ -5,15 +5,24 @@ import re
 import uuid
 from collections import Counter
 from typing import Any, Optional
+from urllib.parse import parse_qs
 
 from call_dashboard import dashboard_html
 from call_outcomes import failure_status_for_reason, sip_failure_reason
-from call_status_store import create_call_record, get_call_record, list_call_records, now_iso, update_call_record
+from call_status_store import (
+    create_call_record,
+    get_call_record,
+    get_call_record_by_vobiz_call_uuid,
+    list_call_records,
+    now_iso,
+    update_call_record,
+)
 from dotenv import load_dotenv
-from fastapi import FastAPI, Header, HTTPException, Query
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, Header, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse, StreamingResponse
 from livekit import api
 from pydantic import BaseModel, Field, field_validator
+from vobiz_client import VobizRestClient, find_recording_for_call
 
 load_dotenv()
 
@@ -70,6 +79,73 @@ def _require_auth(authorization: Optional[str] = None) -> None:
     supplied_token = authorization.removeprefix("Bearer ").strip()
     if supplied_token != expected_token:
         raise HTTPException(status_code=403, detail="Invalid bearer token")
+
+
+def _internal_token() -> str:
+    return os.environ.get("CALL_API_INTERNAL_TOKEN", "").strip() or _call_api_token()
+
+
+def _require_internal_auth(authorization: Optional[str] = None, token: Optional[str] = None) -> None:
+    expected_token = _internal_token()
+    if not expected_token:
+        raise HTTPException(status_code=503, detail="CALL_API_INTERNAL_TOKEN or CALL_API_TOKEN is not configured")
+    supplied_token = (token or "").strip()
+    if not supplied_token and authorization and authorization.startswith("Bearer "):
+        supplied_token = authorization.removeprefix("Bearer ").strip()
+    if supplied_token != expected_token:
+        raise HTTPException(status_code=403, detail="Invalid internal token")
+
+
+def _transcript_text_from_report(report: Any) -> Optional[str]:
+    if not isinstance(report, dict):
+        return None
+    lines: list[str] = []
+    items = report.get("items") or report.get("messages") or []
+    if isinstance(items, dict):
+        items = items.get("items") or items.get("messages") or []
+    if isinstance(items, list):
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            role = item.get("role") or item.get("type") or "unknown"
+            content = item.get("content") or item.get("text")
+            if isinstance(content, list):
+                parts = []
+                for part in content:
+                    if isinstance(part, str):
+                        parts.append(part)
+                    elif isinstance(part, dict):
+                        parts.append(str(part.get("text") or part.get("content") or ""))
+                content = " ".join(part for part in parts if part)
+            if content:
+                lines.append(f"{role}: {content}")
+    return "\n".join(lines) if lines else None
+
+
+def _store_vobiz_recording_result(call_id: str, result: Optional[dict[str, Any]]) -> bool:
+    if not result:
+        return False
+    return update_call_record(
+        call_id,
+        vobiz_call_uuid=result.get("vobiz_call_uuid"),
+        vobiz_recording_id=result.get("vobiz_recording_id"),
+        recording_source=result.get("recording_source") or "vobiz",
+        recording_url=result.get("recording_url"),
+        recording_duration_ms=result.get("recording_duration_ms"),
+        recording_format=result.get("recording_format"),
+        recording_type=result.get("recording_type"),
+        event_message="Vobiz recording metadata updated",
+        event_details={key: value for key, value in result.items() if key != "raw_recording"},
+    )
+
+
+def _refresh_vobiz_recording_for_call(call_id: str) -> Optional[dict[str, Any]]:
+    record = get_call_record(call_id)
+    if not record:
+        return None
+    result = find_recording_for_call(record)
+    _store_vobiz_recording_result(call_id, result)
+    return result
 
 
 def normalize_phone_number(raw_phone: str) -> str:
@@ -147,6 +223,28 @@ def dashboard() -> HTMLResponse:
     return HTMLResponse(dashboard_html())
 
 
+def _parse_byte_range(range_header: str, total: int) -> tuple[Optional[int], Optional[int]]:
+    """Parse ``bytes=start-end``; returns inclusive (start, end) or (None, None) if invalid."""
+    match = re.fullmatch(r"bytes=(\d*)-(\d*)", (range_header or "").strip())
+    if not match or total <= 0:
+        return None, None
+    start_s, end_s = match.groups()
+    if start_s and end_s:
+        start, end = int(start_s), int(end_s)
+    elif start_s:
+        start, end = int(start_s), total - 1
+    elif end_s:
+        suffix = int(end_s)
+        start = max(total - suffix, 0)
+        end = total - 1
+    else:
+        return None, None
+    if start < 0 or end < start or start >= total:
+        return None, None
+    end = min(end, total - 1)
+    return start, end
+
+
 @app.get("/dashboard/data")
 def dashboard_data(
     limit: int = Query(default=100, ge=1, le=500),
@@ -189,6 +287,49 @@ def _outbound_trunk_id(config_dict: Optional[dict[str, Any]] = None) -> Optional
     )
 
 
+def _sip_outbound_config() -> Optional[Any]:
+    """Return an inline SIPOutboundConfig if hostname + auth are provided in env."""
+    hostname = (
+        os.environ.get("SIP_TRUNK_HOSTNAME")
+        or os.environ.get("VOBIZ_SIP_DOMAIN")
+        or os.environ.get("SIP_HOSTNAME")
+        or os.environ.get("OUTBOUND_SIP_HOSTNAME")
+        or ""
+    ).strip().rstrip("/")
+
+    username = (
+        os.environ.get("SIP_AUTH_USERNAME")
+        or os.environ.get("SIP_TRUNK_USERNAME")
+        or os.environ.get("VOBIZ_SIP_USERNAME")
+        or ""
+    ).strip()
+
+    password = (
+        os.environ.get("SIP_AUTH_PASSWORD")
+        or os.environ.get("SIP_TRUNK_PASSWORD")
+        or os.environ.get("VOBIZ_SIP_PASSWORD")
+        or ""
+    ).strip()
+
+    if not hostname or not username or not password:
+        return None
+
+    return api.SIPOutboundConfig(
+        hostname=hostname,
+        auth_username=username,
+        auth_password=password,
+    )
+
+
+def _sip_from_number() -> Optional[str]:
+    return (
+        os.environ.get("SIP_NUMBER")
+        or os.environ.get("SIP_FROM_NUMBER")
+        or os.environ.get("DEFAULT_TRANSFER_NUMBER")
+        or None
+    )
+
+
 async def _create_outbound_sip_participant(
     *,
     room_name: str,
@@ -198,19 +339,33 @@ async def _create_outbound_sip_participant(
 ) -> Any:
     """Create the outbound SIP participant and wait for an answer/failure."""
     trunk_id = _outbound_trunk_id(config_dict)
-    if not trunk_id:
-        raise RuntimeError("Outbound SIP trunk not configured")
+    trunk_cfg = _sip_outbound_config()
+    from_number = _sip_from_number()
 
     async with api.LiveKitAPI() as lk:
-        return await lk.sip.create_sip_participant(
-            api.CreateSIPParticipantRequest(
+        if trunk_cfg:
+            # Prefer inline config (allows passing auth directly)
+            req = api.CreateSIPParticipantRequest(
+                room_name=room_name,
+                trunk=trunk_cfg,
+                sip_call_to=phone_number,
+                participant_identity=participant_identity,
+                wait_until_answered=True,
+            )
+            if from_number:
+                req.sip_number = from_number
+            return await lk.sip.create_sip_participant(req)
+        else:
+            if not trunk_id:
+                raise RuntimeError("Outbound SIP trunk not configured")
+            req = api.CreateSIPParticipantRequest(
                 room_name=room_name,
                 sip_trunk_id=trunk_id,
                 sip_call_to=phone_number,
                 participant_identity=participant_identity,
                 wait_until_answered=True,
             )
-        )
+            return await lk.sip.create_sip_participant(req)
 
 
 async def _delete_room_quietly(room_name: str) -> None:
@@ -345,6 +500,106 @@ async def create_call(
     )
 
 
+@app.post("/calls/{call_id}/refresh-recording")
+def refresh_call_recording(
+    call_id: str,
+    token: Optional[str] = None,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    # Support both header and ?token= (for direct links)
+    if token and not (authorization and str(authorization).startswith("Bearer ")):
+        authorization = f"Bearer {token}"
+    record = get_call_record(call_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Call not found")
+    result = _refresh_vobiz_recording_for_call(call_id)
+    return {"ok": bool(result and result.get("recording_url")), "recording": result, "call": get_call_record(call_id)}
+
+
+@app.post("/internal/calls/{call_id}/session-report")
+def store_session_report(
+    call_id: str,
+    payload: dict[str, Any],
+    authorization: Optional[str] = Header(default=None),
+    token: Optional[str] = Query(default=None),
+) -> dict[str, Any]:
+    _require_internal_auth(authorization, token)
+    record = get_call_record(call_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Call not found")
+
+    report = payload.get("report") if isinstance(payload.get("report"), dict) else payload.get("session_report")
+    if not isinstance(report, dict):
+        report = {"items": payload.get("items") or payload.get("messages") or []}
+    transcript_text = payload.get("transcript_text") or payload.get("transcript") or _transcript_text_from_report(report)
+    update_call_record(
+        call_id,
+        transcript_source=payload.get("transcript_source") or "livekit",
+        transcript_text=transcript_text,
+        session_report=report,
+        event_message="LiveKit session report stored",
+        event_details={"transcript_source": payload.get("transcript_source") or "livekit"},
+    )
+
+    recording_result = None
+    try:
+        recording_result = _refresh_vobiz_recording_for_call(call_id)
+    except Exception as err:
+        update_call_record(
+            call_id,
+            event_message="Vobiz recording lookup failed",
+            event_details={"error": str(err)},
+        )
+    return {"ok": True, "recording": recording_result, "call": get_call_record(call_id)}
+
+
+async def _payload_from_request(request: Request) -> dict[str, Any]:
+    content_type = request.headers.get("content-type", "")
+    raw_body = await request.body()
+    if "application/json" in content_type:
+        try:
+            parsed = json.loads(raw_body.decode("utf-8") or "{}")
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    parsed_qs = parse_qs(raw_body.decode("utf-8"), keep_blank_values=True)
+    return {key: values[-1] if values else "" for key, values in parsed_qs.items()}
+
+
+@app.post("/internal/vobiz/recording-callback")
+async def vobiz_recording_callback(
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+    token: Optional[str] = Query(default=None),
+    call_id: Optional[str] = Query(default=None),
+) -> dict[str, Any]:
+    _require_internal_auth(authorization, token)
+    payload = await _payload_from_request(request)
+    vobiz_call_uuid = payload.get("call_uuid") or payload.get("CallUUID")
+    recording_id = payload.get("recording_id") or payload.get("RecordingID")
+    recording_url = payload.get("record_url") or payload.get("recording_url") or payload.get("RecordUrl")
+    if not vobiz_call_uuid and not recording_id:
+        raise HTTPException(status_code=422, detail="call_uuid or recording_id is required")
+
+    record = get_call_record(call_id) if call_id else None
+    if not record and vobiz_call_uuid:
+        record = get_call_record_by_vobiz_call_uuid(str(vobiz_call_uuid))
+    if not record:
+        raise HTTPException(status_code=404, detail="No call record is linked to this Vobiz callback")
+
+    update_call_record(
+        record["call_id"],
+        vobiz_call_uuid=str(vobiz_call_uuid) if vobiz_call_uuid else None,
+        vobiz_recording_id=str(recording_id) if recording_id else None,
+        recording_source="vobiz",
+        recording_url=str(recording_url) if recording_url else None,
+        recording_duration_ms=payload.get("recording_duration_ms") or payload.get("RecordingDurationMs"),
+        event_message="Vobiz recording callback stored",
+        event_details=payload,
+    )
+    return {"ok": True, "call_id": record["call_id"]}
+
+
 @app.get("/calls/{call_id}")
 def get_call(
     call_id: str,
@@ -355,3 +610,70 @@ def get_call(
     if not record:
         raise HTTPException(status_code=404, detail="Call not found")
     return record
+
+
+@app.get("/calls/{call_id}/recording")
+def get_call_recording(call_id: str, request: Request):
+    record = get_call_record(call_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Call not found")
+
+    rec_url = record.get("recording_url")
+    if not rec_url:
+        raise HTTPException(status_code=404, detail="No recording available for this call")
+
+    range_header = request.headers.get("range")
+    fmt = (record.get("recording_format") or "wav").lower()
+    filename = f"{call_id}.{fmt}"
+    base_headers = {
+        "Content-Disposition": f'inline; filename="{filename}"',
+        "Accept-Ranges": "bytes",
+    }
+
+    try:
+        client = VobizRestClient()
+        upstream = client.stream_recording_media(rec_url, range_header=range_header)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to fetch recording from Vobiz: {e}")
+
+    content_type = upstream.headers.get("Content-Type", "audio/wav")
+
+    # If origin ignores Range, slice locally so <audio> can seek/scrub.
+    if range_header and upstream.status_code == 200:
+        try:
+            data = upstream.content
+        finally:
+            upstream.close()
+        total = len(data)
+        start, end = _parse_byte_range(range_header, total)
+        if start is None:
+            raise HTTPException(status_code=416, detail="Invalid range")
+        chunk = data[start : end + 1]
+        headers = {
+            **base_headers,
+            "Content-Range": f"bytes {start}-{end}/{total}",
+            "Content-Length": str(len(chunk)),
+        }
+        return StreamingResponse(iter([chunk]), status_code=206, media_type=content_type, headers=headers)
+
+    out_headers = dict(base_headers)
+    if upstream.headers.get("Content-Length"):
+        out_headers["Content-Length"] = upstream.headers["Content-Length"]
+    if upstream.headers.get("Content-Range"):
+        out_headers["Content-Range"] = upstream.headers["Content-Range"]
+
+    def iter_chunks():
+        try:
+            for chunk in upstream.iter_content(chunk_size=64 * 1024):
+                if chunk:
+                    yield chunk
+        finally:
+            upstream.close()
+
+    return StreamingResponse(
+        iter_chunks(),
+        status_code=upstream.status_code,
+        media_type=content_type,
+        headers=out_headers,
+    )
+

@@ -264,6 +264,105 @@ class CallApiTestCase(unittest.TestCase):
 
         self.assertEqual(response.status_code, 404)
 
+    def _create_answered_call(self):
+        async def fake_dispatch(room_name, metadata):
+            return object()
+
+        async def fake_sip_dial(**kwargs):
+            return types.SimpleNamespace(sip_call_id="sip-call-123")
+
+        with patch("call_api._create_room_and_dispatch_agent", new=fake_dispatch), \
+             patch("call_api._create_outbound_sip_participant", new=fake_sip_dial):
+            response = self.client.post(
+                "/calls",
+                headers={"Authorization": "Bearer test-token"},
+                json={"phone_number": "9876543210", "purpose": "Follow up"},
+            )
+        self.assertEqual(response.status_code, 200)
+        return response.json()["call_id"]
+
+    def test_internal_session_report_stores_livekit_transcript_and_refreshes_vobiz_recording(self):
+        call_id = self._create_answered_call()
+
+        with patch(
+            "call_api.find_recording_for_call",
+            return_value={
+                "vobiz_call_uuid": "vobiz-call-123",
+                "vobiz_recording_id": "rec-123",
+                "recording_source": "vobiz",
+                "recording_url": "https://media.vobiz.ai/rec-123.mp3",
+                "recording_duration_ms": "12000.00000",
+                "recording_format": "mp3",
+                "recording_type": "call",
+            },
+        ):
+            response = self.client.post(
+                f"/internal/calls/{call_id}/session-report",
+                headers={"Authorization": "Bearer test-token"},
+                json={
+                    "transcript_source": "livekit",
+                    "report": {"items": [{"role": "user", "content": "hello"}, {"role": "assistant", "content": "namaste"}]},
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["ok"])
+        call = body["call"]
+        self.assertEqual(call["transcript_source"], "livekit")
+        self.assertIn("user: hello", call["transcript_text"])
+        self.assertEqual(call["recording_source"], "vobiz")
+        self.assertEqual(call["vobiz_call_uuid"], "vobiz-call-123")
+        self.assertEqual(call["vobiz_recording_id"], "rec-123")
+        self.assertEqual(call["recording_url"], "https://media.vobiz.ai/rec-123.mp3")
+
+    def test_refresh_recording_endpoint_stores_vobiz_recording_url(self):
+        call_id = self._create_answered_call()
+
+        with patch(
+            "call_api.find_recording_for_call",
+            return_value={
+                "vobiz_call_uuid": "vobiz-call-456",
+                "vobiz_recording_id": "rec-456",
+                "recording_source": "vobiz",
+                "recording_url": "https://media.vobiz.ai/rec-456.mp3",
+            },
+        ):
+            response = self.client.post(
+                f"/calls/{call_id}/refresh-recording",
+                headers={"Authorization": "Bearer test-token"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["call"]["recording_url"], "https://media.vobiz.ai/rec-456.mp3")
+        self.assertEqual(body["call"]["recording_source"], "vobiz")
+
+    def test_vobiz_recording_callback_updates_linked_call(self):
+        call_id = self._create_answered_call()
+        self.call_api.update_call_record(call_id, vobiz_call_uuid="vobiz-call-789")
+
+        response = self.client.post(
+            "/internal/vobiz/recording-callback?token=test-token&call_id={}".format(call_id),
+            data={
+                "call_uuid": "vobiz-call-789",
+                "recording_id": "rec-789",
+                "record_url": "https://media.vobiz.ai/rec-789.mp3",
+                "recording_duration_ms": "9000",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        status_response = self.client.get(
+            f"/calls/{call_id}",
+            headers={"Authorization": "Bearer test-token"},
+        )
+        call = status_response.json()
+        self.assertEqual(call["recording_source"], "vobiz")
+        self.assertEqual(call["vobiz_recording_id"], "rec-789")
+        self.assertEqual(call["recording_url"], "https://media.vobiz.ai/rec-789.mp3")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -22,6 +22,16 @@ CALL_COLUMNS = {
     "sip_call_id",
     "participant_identity",
     "participant_status",
+    "transcript_source",
+    "transcript_text",
+    "session_report_json",
+    "vobiz_call_uuid",
+    "vobiz_recording_id",
+    "recording_source",
+    "recording_url",
+    "recording_duration_ms",
+    "recording_format",
+    "recording_type",
     "error",
     "metadata_json",
     "created_at",
@@ -90,6 +100,16 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             sip_call_id TEXT,
             participant_identity TEXT,
             participant_status TEXT,
+            transcript_source TEXT,
+            transcript_text TEXT,
+            session_report_json TEXT,
+            vobiz_call_uuid TEXT,
+            vobiz_recording_id TEXT,
+            recording_source TEXT,
+            recording_url TEXT,
+            recording_duration_ms TEXT,
+            recording_format TEXT,
+            recording_type TEXT,
             error TEXT,
             metadata_json TEXT NOT NULL DEFAULT '{}',
             created_at TEXT NOT NULL,
@@ -101,6 +121,21 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    existing_columns = {row[1] for row in conn.execute("PRAGMA table_info(calls)").fetchall()}
+    for column, column_type in {
+        "transcript_source": "TEXT",
+        "transcript_text": "TEXT",
+        "session_report_json": "TEXT",
+        "vobiz_call_uuid": "TEXT",
+        "vobiz_recording_id": "TEXT",
+        "recording_source": "TEXT",
+        "recording_url": "TEXT",
+        "recording_duration_ms": "TEXT",
+        "recording_format": "TEXT",
+        "recording_type": "TEXT",
+    }.items():
+        if column not in existing_columns:
+            conn.execute(f"ALTER TABLE calls ADD COLUMN {column} {column_type}")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS call_events (
@@ -196,6 +231,16 @@ def create_call_record(record: dict[str, Any]) -> dict[str, Any]:
         "sip_call_id": record.get("sip_call_id"),
         "participant_identity": record.get("participant_identity"),
         "participant_status": record.get("participant_status"),
+        "transcript_source": record.get("transcript_source"),
+        "transcript_text": record.get("transcript_text"),
+        "session_report_json": _json_dumps(record.get("session_report")) if record.get("session_report") is not None else None,
+        "vobiz_call_uuid": record.get("vobiz_call_uuid"),
+        "vobiz_recording_id": record.get("vobiz_recording_id"),
+        "recording_source": record.get("recording_source"),
+        "recording_url": record.get("recording_url"),
+        "recording_duration_ms": str(record["recording_duration_ms"]) if record.get("recording_duration_ms") is not None else None,
+        "recording_format": record.get("recording_format"),
+        "recording_type": record.get("recording_type"),
         "error": record.get("error"),
         "metadata_json": metadata_json,
         "created_at": created_at,
@@ -246,6 +291,16 @@ def update_call_record(
     sip_call_id: Optional[str] = None,
     participant_identity: Optional[str] = None,
     participant_status: Optional[str] = None,
+    transcript_source: Optional[str] = None,
+    transcript_text: Optional[str] = None,
+    session_report: Optional[dict[str, Any]] = None,
+    vobiz_call_uuid: Optional[str] = None,
+    vobiz_recording_id: Optional[str] = None,
+    recording_source: Optional[str] = None,
+    recording_url: Optional[str] = None,
+    recording_duration_ms: Optional[Any] = None,
+    recording_format: Optional[str] = None,
+    recording_type: Optional[str] = None,
     error: Optional[str] = None,
     metadata: Optional[dict[str, Any]] = None,
     event_message: Optional[str] = None,
@@ -270,6 +325,26 @@ def update_call_record(
         updates["participant_identity"] = participant_identity
     if participant_status is not None:
         updates["participant_status"] = participant_status
+    if transcript_source is not None:
+        updates["transcript_source"] = transcript_source
+    if transcript_text is not None:
+        updates["transcript_text"] = transcript_text
+    if session_report is not None:
+        updates["session_report_json"] = _json_dumps(session_report)
+    if vobiz_call_uuid is not None:
+        updates["vobiz_call_uuid"] = vobiz_call_uuid
+    if vobiz_recording_id is not None:
+        updates["vobiz_recording_id"] = vobiz_recording_id
+    if recording_source is not None:
+        updates["recording_source"] = recording_source
+    if recording_url is not None:
+        updates["recording_url"] = recording_url
+    if recording_duration_ms is not None:
+        updates["recording_duration_ms"] = str(recording_duration_ms)
+    if recording_format is not None:
+        updates["recording_format"] = recording_format
+    if recording_type is not None:
+        updates["recording_type"] = recording_type
     if error is not None:
         updates["error"] = error
     if metadata is not None:
@@ -320,7 +395,9 @@ def get_call_record(call_id: str) -> Optional[dict[str, Any]]:
 
     record = dict(row)
     metadata_json = record.pop("metadata_json", "{}")
+    session_report_json = record.pop("session_report_json", None)
     record["metadata"] = _json_loads(metadata_json)
+    record["session_report"] = _json_loads(session_report_json)
     record["events"] = [
         {
             **{key: event_row[key] for key in event_row.keys() if key != "details_json"},
@@ -329,6 +406,17 @@ def get_call_record(call_id: str) -> Optional[dict[str, Any]]:
         for event_row in event_rows
     ]
     return record
+
+
+def get_call_record_by_vobiz_call_uuid(vobiz_call_uuid: str) -> Optional[dict[str, Any]]:
+    with _connection() as conn:
+        row = conn.execute(
+            "SELECT call_id FROM calls WHERE vobiz_call_uuid = ? ORDER BY created_at DESC LIMIT 1",
+            (vobiz_call_uuid,),
+        ).fetchone()
+    if row is None:
+        return None
+    return get_call_record(row["call_id"])
 
 
 def list_call_records(limit: int = 100) -> list[dict[str, Any]]:
@@ -351,6 +439,8 @@ def list_call_records(limit: int = 100) -> list[dict[str, Any]]:
     for row in rows:
         record = dict(row)
         metadata_json = record.pop("metadata_json", "{}")
+        session_report_json = record.pop("session_report_json", None)
         record["metadata"] = _json_loads(metadata_json)
+        record["session_report"] = _json_loads(session_report_json)
         records.append(record)
     return records

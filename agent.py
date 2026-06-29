@@ -8,6 +8,7 @@ os.environ['SSL_CERT_FILE'] = certifi.where()
 import logging
 import json
 import asyncio
+import requests
 from dotenv import load_dotenv
 from livekit import agents, api
 from livekit.agents import AgentSession, Agent
@@ -300,6 +301,111 @@ def _call_record_has_failure_status(call_context: CallContext) -> bool:
     return status.startswith("failed") or status == "dispatch_failed"
 
 
+def _call_api_internal_url() -> Optional[str]:
+    raw = (
+        os.environ.get("CALL_API_INTERNAL_URL")
+        or os.environ.get("LIVEKIT_CALL_API_URL")
+        or os.environ.get("CALL_API_URL")
+        or ""
+    ).strip()
+    return raw.rstrip("/") if raw else None
+
+
+def _call_api_internal_token() -> Optional[str]:
+    return (
+        os.environ.get("CALL_API_INTERNAL_TOKEN")
+        or os.environ.get("CALL_API_TOKEN")
+        or os.environ.get("LIVEKIT_CALL_API_TOKEN")
+        or ""
+    ).strip() or None
+
+
+def _transcript_text_from_report(report: Any) -> Optional[str]:
+    if not isinstance(report, dict):
+        return None
+    lines: list[str] = []
+    items = report.get("items") or report.get("messages") or []
+    if isinstance(items, dict):
+        items = items.get("items") or items.get("messages") or []
+    if isinstance(items, list):
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            role = item.get("role") or item.get("type") or "unknown"
+            content = item.get("content") or item.get("text")
+            if isinstance(content, list):
+                parts = []
+                for part in content:
+                    if isinstance(part, str):
+                        parts.append(part)
+                    elif isinstance(part, dict):
+                        parts.append(str(part.get("text") or part.get("content") or ""))
+                content = " ".join(part for part in parts if part)
+            if content:
+                lines.append(f"{role}: {content}")
+    return "\n".join(lines) if lines else None
+
+
+def _session_report_payload(session: AgentSession, ctx: agents.JobContext, call_context: CallContext) -> dict[str, Any]:
+    try:
+        report = session.history.to_dict()
+    except Exception as err:
+        logger.warning("Failed to serialize LiveKit session history: %s", err)
+        report = {}
+    return {
+        "room_name": getattr(ctx.room, "name", None),
+        "transcript_source": "livekit",
+        "transcript_text": _transcript_text_from_report(report),
+        "report": report,
+        "recording_source": "vobiz",
+        "sip_call_id": call_context.sip_call_id,
+        "participant_identity": call_context.participant_identity,
+    }
+
+
+def _post_session_report_sync(call_id: str, payload: dict[str, Any]) -> None:
+    base_url = _call_api_internal_url()
+    token = _call_api_internal_token()
+    if not base_url or not token:
+        logger.info("Skipping session report callback; CALL_API_INTERNAL_URL/LIVEKIT_CALL_API_URL or token is not configured")
+        return
+    response = requests.post(
+        f"{base_url}/internal/calls/{call_id}/session-report",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        json=payload,
+        timeout=20,
+    )
+    response.raise_for_status()
+
+
+async def _post_session_report(call_id: str, payload: dict[str, Any]) -> None:
+    try:
+        await asyncio.to_thread(_post_session_report_sync, call_id, payload)
+        logger.info("Posted LiveKit session report for call %s", call_id)
+    except Exception as err:
+        logger.warning("Failed to post LiveKit session report for call %s: %s", call_id, err)
+
+
+def _register_session_report_handler(ctx: agents.JobContext, call_context: CallContext, session: AgentSession) -> None:
+    if not call_context.is_outbound or not call_context.call_id or not hasattr(ctx.room, "on"):
+        return
+    posted = False
+
+    @ctx.room.on("participant_disconnected")
+    def on_participant_disconnected_for_report(participant):
+        nonlocal posted
+        if posted or not _participant_matches_call(call_context, participant):
+            return
+        posted = True
+
+        async def send_later() -> None:
+            await asyncio.sleep(2)
+            payload = _session_report_payload(session, ctx, call_context)
+            await _post_session_report(call_context.call_id or "", payload)
+
+        asyncio.create_task(send_later())
+
+
 def _sip_failure_reason(
     sip_status_code: Any = None,
     sip_status: Any = None,
@@ -320,7 +426,7 @@ def _participant_matches_call(call_context: CallContext, participant: Any) -> bo
     return bool(participant_phone and participant_phone == call_context.phone_number)
 
 
-def _register_call_status_handlers(ctx: agents.JobContext, call_context: CallContext) -> None:
+def _register_call_status_handlers(ctx: agents.JobContext, call_context: CallContext, session: AgentSession) -> None:
     """Track post-answer SIP state transitions in the SQLite call record."""
     if not call_context.is_outbound or not call_context.call_id or not hasattr(ctx.room, "on"):
         return
@@ -368,6 +474,15 @@ def _register_call_status_handlers(ctx: agents.JobContext, call_context: CallCon
             participant_identity=getattr(participant, "identity", None),
             event_message="SIP participant disconnected",
         )
+
+        # Also ensure LiveKit session report (transcript) is posted for outbound calls.
+        # The dedicated report listener can miss quick disconnects; this path is reliable.
+        if call_context.is_outbound and call_context.call_id:
+            try:
+                payload = _session_report_payload(session, ctx, call_context)
+                asyncio.create_task(_post_session_report(call_context.call_id, payload))
+            except Exception as err:
+                logger.warning("Failed to schedule session report on disconnect for %s: %s", call_context.call_id, err)
 
 
 async def _ensure_outbound_participant(
@@ -848,7 +963,8 @@ async def entrypoint(ctx: agents.JobContext):
     phone_number = call_context.phone_number
     fnc_ctx.phone_number = phone_number
     system_prompt = get_compiled_prompt(is_verified=fnc_ctx.is_verified)
-    _register_call_status_handlers(ctx, call_context)
+    _register_call_status_handlers(ctx, call_context, session)
+    _register_session_report_handler(ctx, call_context, session)
 
     # Start LiveKit Agent Session
     nc_option = noise_cancellation.BVCTelephony() if agent_config.get("noise_cancellation", False) else None
@@ -918,5 +1034,6 @@ if __name__ == "__main__":
             agent_name=AGENT_NAME,
             load_threshold=0.99,
             initialize_process_timeout=30.0,
+            port=int(os.environ.get("LIVEKIT_AGENT_HTTP_PORT", "8081")),
         )
     )

@@ -127,6 +127,10 @@ DASHBOARD_HTML = """<!doctype html>
     .detail-head h3 { margin: 0; font-size: 22px; letter-spacing: -.03em; }
     .kv { display: grid; grid-template-columns: 110px 1fr; gap: 10px; padding: 9px 0; border-bottom: 1px solid rgba(148, 163, 184, .11); }
     .kv span:first-child { color: var(--muted); }
+    .kv-block { display: flex; flex-direction: column; gap: 6px; padding: 9px 0; border-bottom: 1px solid rgba(148, 163, 184, .11); }
+    .kv-block span:first-child { color: var(--muted); }
+    .recording-player { display: grid; gap: 6px; }
+    .recording-player audio { width: 100%; height: 36px; }
 
     .timeline { margin-top: 18px; display: grid; gap: 12px; }
     .event { display: grid; grid-template-columns: 20px 1fr; gap: 10px; }
@@ -145,6 +149,76 @@ DASHBOARD_HTML = """<!doctype html>
       .shell { width: min(100vw - 20px, 1440px); padding-top: 12px; }
       .metrics { grid-template-columns: 1fr; }
       .control-row { grid-template-columns: 1fr; }
+    }
+    dialog::backdrop {
+      background: rgba(2, 6, 23, 0.75);
+      backdrop-filter: blur(8px);
+    }
+    dialog {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel-strong);
+      color: var(--text);
+      padding: 30px;
+      max-width: 600px;
+      width: calc(100vw - 32px);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(25px);
+      outline: none;
+    }
+    .modal-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 12px;
+    }
+    .modal-head h3 { margin: 0; font-size: 20px; }
+    .modal-close {
+      width: auto;
+      padding: 6px 12px;
+      font-size: 14px;
+      border-radius: 8px;
+      margin: 0;
+      background: rgba(255, 255, 255, 0.1);
+      color: var(--text);
+      border: 0;
+      cursor: pointer;
+      font-weight: bold;
+    }
+    .modal-close:hover {
+      background: rgba(255, 255, 255, 0.2);
+    }
+    .btn-action {
+      width: auto;
+      padding: 6px 12px;
+      font-size: 12px;
+      border-radius: 8px;
+      margin: 0;
+      background: linear-gradient(135deg, var(--blue), var(--cyan));
+      color: #031323;
+      font-weight: bold;
+      border: 0;
+      cursor: pointer;
+    }
+    .btn-action:hover {
+      filter: brightness(1.08);
+    }
+    .btn-secondary {
+      width: auto;
+      padding: 4px 10px;
+      font-size: 11px;
+      border-radius: 6px;
+      margin: 0;
+      background: rgba(96, 165, 250, 0.15);
+      border: 1px solid rgba(96, 165, 250, 0.3);
+      color: var(--blue);
+      cursor: pointer;
+      font-weight: bold;
+    }
+    .btn-secondary:hover {
+      background: rgba(96, 165, 250, 0.25);
     }
   </style>
 </head>
@@ -225,11 +299,12 @@ DASHBOARD_HTML = """<!doctype html>
       box.style.display = message ? 'block' : 'none';
     }
 
-    async function api(path) {
+    async function api(path, options = {}) {
       const token = tokenInput.value.trim();
       if (!token) throw new Error('Paste CALL_API_TOKEN to load dashboard data.');
       sessionStorage.setItem('callDashboardToken', token);
-      const response = await fetch(path, { headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } });
+      const headers = { Authorization: `Bearer ${token}`, Accept: 'application/json', ...options.headers };
+      const response = await fetch(path, { ...options, headers });
       if (!response.ok) {
         const text = await response.text();
         throw new Error(`${response.status} ${response.statusText}: ${text}`);
@@ -277,6 +352,7 @@ DASHBOARD_HTML = """<!doctype html>
     }
 
     function renderDetail(call) {
+      activeCall = call;
       const events = call.events || [];
       $('detailPane').innerHTML = `
         <div class="detail-head">
@@ -287,6 +363,29 @@ DASHBOARD_HTML = """<!doctype html>
         <div class="kv"><span>Purpose</span><strong>${escapeHtml(purposeOf(call))}</strong></div>
         <div class="kv"><span>Reason</span><strong>${escapeHtml(call.reason || '—')}</strong></div>
         <div class="kv"><span>SIP</span><strong class="mono">${escapeHtml([call.sip_status_code, call.sip_status].filter(Boolean).join(' ') || '—')}</strong></div>
+        <div class="kv-block">
+          <span>Recording</span>
+          <div style="display: flex; align-items: center; gap: 10px; width: 100%;">
+            ${call.recording_url ? `
+              <div class="recording-player" style="flex: 1;">
+                <audio controls preload="metadata" src="/calls/${encodeURIComponent(call.call_id)}/recording">Audio not supported.</audio>
+                <div class="muted" style="font-size:12px">${escapeHtml(call.recording_source || 'recording')}${call.recording_duration_ms ? ` · ${Math.round(Number(call.recording_duration_ms) / 1000)}s` : ''}</div>
+              </div>
+            ` : `
+              <span class="muted" style="flex: 1;">Not available yet</span>
+              <button class="btn-action" id="btnFetchRecording" data-call-id="${escapeHtml(call.call_id)}">Fetch</button>
+            `}
+          </div>
+        </div>
+        <div class="kv">
+          <span>Transcript</span>
+          <strong style="display: flex; align-items: center; gap: 10px;">
+            ${escapeHtml(call.transcript_source || '—')}
+            ${call.transcript_text ? `
+              <button class="btn-secondary" id="btnViewTranscript">View Full Transcript</button>
+            ` : ''}
+          </strong>
+        </div>
         <div class="kv"><span>Error</span><strong>${escapeHtml(call.error || '—')}</strong></div>
         <div class="kv"><span>Updated</span><strong>${escapeHtml(fmtTime(call.updated_at))}</strong></div>
         <div class="timeline">
@@ -302,6 +401,8 @@ DASHBOARD_HTML = """<!doctype html>
         </div>`;
     }
 
+    let activeCall = null;
+
     async function loadCall(callId) {
       try {
         setError('');
@@ -312,6 +413,35 @@ DASHBOARD_HTML = """<!doctype html>
       }
     }
 
+    $('detailPane').addEventListener('click', async (event) => {
+      const btnFetch = event.target.closest('#btnFetchRecording');
+      if (btnFetch) {
+        const callId = btnFetch.dataset.callId;
+        const originalText = btnFetch.textContent;
+        try {
+          btnFetch.disabled = true;
+          btnFetch.textContent = 'Fetching...';
+          const result = await api(`/calls/${encodeURIComponent(callId)}/refresh-recording`, { method: 'POST' });
+          if (result.ok || (result.recording && result.recording.recording_url)) {
+            await loadCall(callId);
+          } else {
+            alert('Recording not available yet. Please try again later.');
+          }
+        } catch (error) {
+          alert('Failed to fetch recording: ' + error.message);
+        } finally {
+          btnFetch.disabled = false;
+          btnFetch.textContent = originalText;
+        }
+      }
+
+      const btnViewTranscript = event.target.closest('#btnViewTranscript');
+      if (btnViewTranscript && activeCall && activeCall.transcript_text) {
+        $('modalTranscriptText').textContent = activeCall.transcript_text;
+        $('transcriptModal').showModal();
+      }
+    });
+
     $('refresh').addEventListener('click', loadDashboard);
     $('callsBody').addEventListener('click', (event) => {
       const row = event.target.closest('tr[data-call-id]');
@@ -320,6 +450,13 @@ DASHBOARD_HTML = """<!doctype html>
     setInterval(() => { if ($('auto').checked && tokenInput.value.trim()) loadDashboard(); }, 5000);
     if (tokenInput.value.trim()) loadDashboard();
   </script>
+  <dialog id="transcriptModal">
+    <div class="modal-head">
+      <h3>Conversation Transcript</h3>
+      <button class="modal-close" onclick="document.getElementById('transcriptModal').close()">Close</button>
+    </div>
+    <div id="modalTranscriptText" style="white-space: pre-wrap; max-height: 450px; overflow-y: auto; font-family: inherit; line-height: 1.65; font-size: 15px; color: var(--text);"></div>
+  </dialog>
 </body>
 </html>
 """

@@ -1,18 +1,14 @@
 # -*- coding: utf-8 -*-
-"""SQLite-backed persistence for outbound call-control status."""
+"""PostgreSQL persistence for outbound call-control status."""
 
 import json
 import os
-import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Optional
 
 
-DEFAULT_DB_FILENAME = "call_control.sqlite3"
-
-CALL_COLUMNS = {
+CALL_COLUMNS = (
     "room_name",
     "phone_number",
     "status",
@@ -40,8 +36,7 @@ CALL_COLUMNS = {
     "dialing_at",
     "answered_at",
     "ended_at",
-}
-
+)
 
 FAILURE_STATUSES = {
     "dispatch_failed",
@@ -53,26 +48,76 @@ FAILURE_STATUSES = {
     "failed_trunk",
 }
 
+COMPLETED_STATUSES = (
+    "completed",
+    "failed",
+    "failed_busy",
+    "failed_no_answer",
+    "failed_rejected",
+    "failed_unreachable",
+    "failed_trunk",
+)
+
+ACTIVE_STATUSES = (
+    "dispatching",
+    "dispatched",
+    "dialing",
+    "answered",
+    "active",
+)
+
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def database_path() -> Path:
-    configured = os.environ.get("CALL_API_DB_PATH") or os.environ.get("CALL_STATUS_DB_PATH")
-    if configured:
-        return Path(configured).expanduser()
-    return Path(__file__).resolve().with_name(DEFAULT_DB_FILENAME)
+def database_url() -> Optional[str]:
+    """Return the configured PostgreSQL URL without logging or exposing it."""
+    configured = (
+        os.environ.get("CALL_API_DATABASE_URL")
+        or os.environ.get("CALL_STATUS_DATABASE_URL")
+        or os.environ.get("DATABASE_URL")
+        or os.environ.get("POSTGRES_URL")
+        or os.environ.get("POSTGRESQL_URL")
+        or ""
+    ).strip()
+    return configured or None
 
 
-def _connect() -> sqlite3.Connection:
-    path = database_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, timeout=30)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA journal_mode = WAL")
-    _ensure_schema(conn)
+def require_database_url() -> str:
+    url = database_url()
+    if not url:
+        raise RuntimeError(
+            "PostgreSQL persistence is required. Set CALL_API_DATABASE_URL "
+            "or CALL_STATUS_DATABASE_URL on both the Call API and worker."
+        )
+    return url
+
+
+def database_backend() -> str:
+    return "postgres"
+
+
+_schema_ensured = False
+
+
+def _connect():
+    global _schema_ensured
+    try:
+        import psycopg
+        from psycopg.rows import dict_row
+    except ImportError as exc:
+        raise RuntimeError(
+            "PostgreSQL persistence requires the psycopg package. Run `uv sync` "
+            "after adding psycopg[binary] to pyproject.toml."
+        ) from exc
+
+    timeout = int(os.environ.get("CALL_API_DB_CONNECT_TIMEOUT", "10"))
+    conn = psycopg.connect(require_database_url(), row_factory=dict_row, connect_timeout=timeout)
+    if not _schema_ensured:
+        # ponytail: ensure schema checks are run only once per application lifecycle to avoid network latency on every connection
+        _ensure_schema(conn)
+        _schema_ensured = True
     return conn
 
 
@@ -80,13 +125,20 @@ def _connect() -> sqlite3.Connection:
 def _connection():
     conn = _connect()
     try:
-        with conn:
-            yield conn
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
 
-def _ensure_schema(conn: sqlite3.Connection) -> None:
+def _execute(conn: Any, sql: str, params: tuple[Any, ...] = ()):
+    return conn.execute(sql, params)
+
+
+def _ensure_schema(conn: Any) -> None:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS calls (
@@ -121,7 +173,6 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
-    existing_columns = {row[1] for row in conn.execute("PRAGMA table_info(calls)").fetchall()}
     for column, column_type in {
         "transcript_source": "TEXT",
         "transcript_text": "TEXT",
@@ -134,21 +185,19 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         "recording_format": "TEXT",
         "recording_type": "TEXT",
     }.items():
-        if column not in existing_columns:
-            conn.execute(f"ALTER TABLE calls ADD COLUMN {column} {column_type}")
+        conn.execute(f"ALTER TABLE calls ADD COLUMN IF NOT EXISTS {column} {column_type}")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS call_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            call_id TEXT NOT NULL,
+            id BIGSERIAL PRIMARY KEY,
+            call_id TEXT NOT NULL REFERENCES calls(call_id) ON DELETE CASCADE,
             status TEXT NOT NULL,
             reason TEXT,
             sip_status_code TEXT,
             sip_status TEXT,
             message TEXT,
             details_json TEXT NOT NULL DEFAULT '{}',
-            created_at TEXT NOT NULL,
-            FOREIGN KEY(call_id) REFERENCES calls(call_id) ON DELETE CASCADE
+            created_at TEXT NOT NULL
         )
         """
     )
@@ -162,6 +211,8 @@ def _json_dumps(value: Optional[dict[str, Any]]) -> str:
 def _json_loads(raw_value: Any) -> dict[str, Any]:
     if not raw_value:
         return {}
+    if isinstance(raw_value, dict):
+        return raw_value
     try:
         parsed = json.loads(raw_value)
     except Exception:
@@ -183,8 +234,12 @@ def _timestamp_column_for_status(status: Optional[str]) -> Optional[str]:
     return None
 
 
+def _row_to_dict(row: Any) -> dict[str, Any]:
+    return dict(row)
+
+
 def _insert_event(
-    conn: sqlite3.Connection,
+    conn: Any,
     call_id: str,
     *,
     status: str,
@@ -195,11 +250,12 @@ def _insert_event(
     details: Optional[dict[str, Any]] = None,
     created_at: Optional[str] = None,
 ) -> None:
-    conn.execute(
+    _execute(
+        conn,
         """
         INSERT INTO call_events (
             call_id, status, reason, sip_status_code, sip_status, message, details_json, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             call_id,
@@ -254,18 +310,19 @@ def create_call_record(record: dict[str, Any]) -> dict[str, Any]:
     if timestamp_column and not values.get(timestamp_column):
         values[timestamp_column] = created_at
 
-    columns = ["call_id", *CALL_COLUMNS]
-    placeholders = ", ".join("?" for _ in columns)
+    columns = ("call_id", *CALL_COLUMNS)
+    placeholders = ", ".join("%s" for _ in columns)
     assignments = ", ".join(f"{column}=excluded.{column}" for column in CALL_COLUMNS)
 
     with _connection() as conn:
-        conn.execute(
+        _execute(
+            conn,
             f"""
             INSERT INTO calls ({', '.join(columns)})
             VALUES ({placeholders})
             ON CONFLICT(call_id) DO UPDATE SET {assignments}
             """,
-            [values.get(column) for column in columns],
+            tuple(values.get(column) for column in columns),
         )
         _insert_event(
             conn,
@@ -354,13 +411,14 @@ def update_call_record(
     if timestamp_column:
         updates[timestamp_column] = updates["updated_at"]
 
-    assignments = ", ".join(f"{column} = ?" for column in updates)
-    values = [updates[column] for column in updates]
+    assignments = ", ".join(f"{column} = %s" for column in updates)
+    values = tuple(updates[column] for column in updates)
 
     with _connection() as conn:
-        cursor = conn.execute(
-            f"UPDATE calls SET {assignments} WHERE call_id = ?",
-            [*values, call_id],
+        cursor = _execute(
+            conn,
+            f"UPDATE calls SET {assignments} WHERE call_id = %s",
+            (*values, call_id),
         )
         if cursor.rowcount == 0:
             return False
@@ -378,30 +436,36 @@ def update_call_record(
     return True
 
 
+def _record_from_row(row: Any) -> dict[str, Any]:
+    record = _row_to_dict(row)
+    metadata_json = record.pop("metadata_json", "{}")
+    session_report_json = record.pop("session_report_json", None)
+    record["metadata"] = _json_loads(metadata_json)
+    record["session_report"] = _json_loads(session_report_json)
+    return record
+
+
 def get_call_record(call_id: str) -> Optional[dict[str, Any]]:
     with _connection() as conn:
-        row = conn.execute("SELECT * FROM calls WHERE call_id = ?", (call_id,)).fetchone()
+        row = _execute(conn, "SELECT * FROM calls WHERE call_id = %s", (call_id,)).fetchone()
         if row is None:
             return None
-        event_rows = conn.execute(
+        event_rows = _execute(
+            conn,
             """
             SELECT id, status, reason, sip_status_code, sip_status, message, details_json, created_at
             FROM call_events
-            WHERE call_id = ?
+            WHERE call_id = %s
             ORDER BY id ASC
             """,
             (call_id,),
         ).fetchall()
 
-    record = dict(row)
-    metadata_json = record.pop("metadata_json", "{}")
-    session_report_json = record.pop("session_report_json", None)
-    record["metadata"] = _json_loads(metadata_json)
-    record["session_report"] = _json_loads(session_report_json)
+    record = _record_from_row(row)
     record["events"] = [
         {
-            **{key: event_row[key] for key in event_row.keys() if key != "details_json"},
-            "details": _json_loads(event_row["details_json"]),
+            **{key: value for key, value in _row_to_dict(event_row).items() if key != "details_json"},
+            "details": _json_loads(_row_to_dict(event_row).get("details_json")),
         }
         for event_row in event_rows
     ]
@@ -410,37 +474,68 @@ def get_call_record(call_id: str) -> Optional[dict[str, Any]]:
 
 def get_call_record_by_vobiz_call_uuid(vobiz_call_uuid: str) -> Optional[dict[str, Any]]:
     with _connection() as conn:
-        row = conn.execute(
-            "SELECT call_id FROM calls WHERE vobiz_call_uuid = ? ORDER BY created_at DESC LIMIT 1",
+        row = _execute(
+            conn,
+            "SELECT call_id FROM calls WHERE vobiz_call_uuid = %s ORDER BY created_at DESC LIMIT 1",
             (vobiz_call_uuid,),
         ).fetchone()
     if row is None:
         return None
-    return get_call_record(row["call_id"])
+    return get_call_record(_row_to_dict(row)["call_id"])
 
 
 def list_call_records(limit: int = 100) -> list[dict[str, Any]]:
     """Return recent call records without full event histories for dashboard views."""
     bounded_limit = max(1, min(int(limit or 100), 500))
     with _connection() as conn:
-        rows = conn.execute(
+        rows = _execute(
+            conn,
             """
             SELECT
                 calls.*,
                 (SELECT COUNT(*) FROM call_events WHERE call_events.call_id = calls.call_id) AS event_count
             FROM calls
             ORDER BY created_at DESC
-            LIMIT ?
+            LIMIT %s
             """,
             (bounded_limit,),
         ).fetchall()
 
-    records = []
+    return [_record_from_row(row) for row in rows]
+
+
+def list_active_call_records() -> list[dict[str, Any]]:
+    """Return active calls used by dashboard kill/start controls."""
+    with _connection() as conn:
+        rows = _execute(
+            conn,
+            """
+            SELECT call_id, room_name, phone_number, status, metadata_json
+            FROM calls
+            WHERE status IN ('dispatching', 'dispatched', 'dialing', 'answered', 'active')
+            ORDER BY created_at ASC
+            """,
+        ).fetchall()
+
+    calls = []
     for row in rows:
-        record = dict(row)
-        metadata_json = record.pop("metadata_json", "{}")
-        session_report_json = record.pop("session_report_json", None)
-        record["metadata"] = _json_loads(metadata_json)
-        record["session_report"] = _json_loads(session_report_json)
-        records.append(record)
-    return records
+        call = _row_to_dict(row)
+        call["metadata"] = _json_loads(call.pop("metadata_json", "{}"))
+        calls.append(call)
+    return calls
+
+
+def list_completed_call_records() -> list[dict[str, Any]]:
+    """Return completed/failed calls in oldest-first order for sheet syncing."""
+    with _connection() as conn:
+        rows = _execute(
+            conn,
+            """
+            SELECT *
+            FROM calls
+            WHERE status IN ('completed', 'failed', 'failed_busy', 'failed_no_answer', 'failed_rejected', 'failed_unreachable', 'failed_trunk')
+            ORDER BY created_at ASC
+            """,
+        ).fetchall()
+
+    return [_record_from_row(row) for row in rows]

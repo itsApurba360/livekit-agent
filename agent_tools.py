@@ -4,6 +4,7 @@ import random
 from typing import Optional, Callable, Any
 from livekit.agents import llm
 from frappe_client import FrappeRestClient
+from call_status_store import update_call_record, get_call_record
 
 logger = logging.getLogger("agent-tools")
 
@@ -12,7 +13,7 @@ class CustomerQueryTools(llm.ToolContext):
     A standalone LLM ToolContext that implements all customer information lookup
     and WhatsApp OTP/PDF sending logic using a remote Frappe REST client instead of local ORM imports.
     """
-    def __init__(self, client: FrappeRestClient, customer_id: Optional[str] = None, phone_number: Optional[str] = None, on_verify_success: Optional[Callable] = None, session: Optional[Any] = None, ctx: Optional[Any] = None):
+    def __init__(self, client: FrappeRestClient, customer_id: Optional[str] = None, phone_number: Optional[str] = None, on_verify_success: Optional[Callable] = None, session: Optional[Any] = None, ctx: Optional[Any] = None, call_id: Optional[str] = None):
         super().__init__(tools=[])
         self.client = client
         self.customer_id = customer_id
@@ -23,6 +24,7 @@ class CustomerQueryTools(llm.ToolContext):
         self.on_verify_success = on_verify_success
         self.session = session
         self.ctx = ctx
+        self.call_id = call_id
 
     @llm.function_tool(description="Get the list and status of sales orders for the current customer.")
     async def get_customer_sales_orders(self, customer_id: Optional[str] = None):
@@ -455,7 +457,7 @@ class CustomerQueryTools(llm.ToolContext):
         if ctx:
             import asyncio
             async def perform_shutdown():
-                await asyncio.sleep(3.0)  # Wait 3 seconds for the final speech to play
+                await asyncio.sleep(1.0)  # Wait 1 second for the final speech to play
                 try:
                     logger.info("Custom end_call: Deleting room and shutting down job...")
                     await ctx.delete_room()
@@ -468,7 +470,7 @@ class CustomerQueryTools(llm.ToolContext):
         elif session:
             import asyncio
             async def perform_session_shutdown():
-                await asyncio.sleep(3.0)
+                await asyncio.sleep(1.0)
                 try:
                     logger.info("Custom end_call: Shutting down agent session...")
                     session.shutdown()
@@ -479,3 +481,33 @@ class CustomerQueryTools(llm.ToolContext):
             return "Call is ending. Politely say goodbye to the user now in simple Hindi/Hinglish."
             
         return "Failed to end call: context not available."
+
+    @llm.function_tool(description="Schedule a follow-up callback with a human representative. Call this when the customer specifies a time/day for a callback or requests to speak to a human executive.")
+    async def schedule_human_callback(self, date_str: str, time_str: str, client_notes: Optional[str] = None):
+        """
+        Args:
+            date_str: Date for the callback in DD/MM/YYYY format (e.g. '30/06/2026').
+            time_str: Time in 24-hour IST format (e.g. '14:30').
+            client_notes: Optional notes or context about why the callback is scheduled.
+        """
+        logger.info(f"Scheduling human callback on {date_str} at {time_str}. Notes: {client_notes}")
+        if self.call_id:
+            try:
+                record = get_call_record(self.call_id)
+                metadata = record.get("metadata") or {} if record else {}
+                metadata["next_action"] = "Human"
+                metadata["next_action_date"] = date_str
+                metadata["next_action_time"] = time_str
+                if client_notes:
+                    metadata["client_comment"] = client_notes
+                update_call_record(
+                    self.call_id,
+                    metadata=metadata,
+                    event_message=f"Scheduled human callback on {date_str} at {time_str}"
+                )
+                logger.info(f"Successfully saved human callback in PostgreSQL metadata for {self.call_id}")
+                return f"Human callback successfully scheduled for {date_str} at {time_str}."
+            except Exception as e:
+                logger.error(f"Failed to update callback in PostgreSQL for {self.call_id}: {e}")
+                return f"Error scheduling callback in database: {str(e)}."
+        return "Failed to schedule callback: Call ID not available."

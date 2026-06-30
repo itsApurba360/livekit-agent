@@ -228,7 +228,7 @@ DASHBOARD_HTML = """<!doctype html>
       <div class="card intro">
         <div class="eyebrow">LiveKit outbound telemetry</div>
         <h1>Call Control Dashboard</h1>
-        <p class="subtitle">Monitor Hermes-triggered PSTN calls from the local SQLite status store. Track dispatch, dialing, answered calls, carrier failures, SIP codes, and the exact event timeline for each call.</p>
+        <p class="subtitle">Monitor Hermes-triggered PSTN calls from the shared PostgreSQL status store. Track dispatch, dialing, answered calls, carrier failures, SIP codes, and the exact event timeline for each call.</p>
       </div>
       <div class="card controls">
         <div>
@@ -246,6 +246,9 @@ DASHBOARD_HTML = """<!doctype html>
           </div>
         </div>
         <label class="check-row"><input id="auto" type="checkbox" checked /> Auto-refresh every 5s</label>
+        <div style="margin-top: 14px;">
+          <button id="agentToggleBtn" style="font-weight: 900; border-radius: 15px; padding: 12px; border: 0; cursor: pointer; transition: all 0.2s; background: rgba(255,255,255,0.08); color: var(--text);">Checking Status...</button>
+        </div>
         <div class="hint" id="lastUpdated">Waiting for data…</div>
       </div>
     </section>
@@ -324,7 +327,7 @@ DASHBOARD_HTML = """<!doctype html>
     function renderCalls(calls) {
       const body = $('callsBody');
       if (!calls.length) {
-        body.innerHTML = '<tr><td colspan="7" class="muted">No calls found in the SQLite store.</td></tr>';
+        body.innerHTML = '<tr><td colspan="7" class="muted">No calls found in the PostgreSQL store.</td></tr>';
         return;
       }
       body.innerHTML = calls.map((call) => `
@@ -339,6 +342,19 @@ DASHBOARD_HTML = """<!doctype html>
         </tr>`).join('');
     }
 
+    function updateAgentToggleBtn(running) {
+      const btn = $('agentToggleBtn');
+      if (running) {
+        btn.textContent = 'Kill Switch';
+        btn.style.background = 'linear-gradient(135deg, #ef4444, #f43f5e)';
+        btn.style.color = '#ffffff';
+      } else {
+        btn.textContent = 'Start Agent';
+        btn.style.background = 'linear-gradient(135deg, #10b981, #059669)';
+        btn.style.color = '#ffffff';
+      }
+    }
+
     async function loadDashboard() {
       try {
         setError('');
@@ -346,6 +362,10 @@ DASHBOARD_HTML = """<!doctype html>
         const data = await api(`/dashboard/data?limit=${encodeURIComponent(limit)}`);
         renderSummary(data.summary || {});
         renderCalls(data.calls || []);
+        updateAgentToggleBtn(data.agent_running);
+        if (data.agent_error) {
+          setError(data.agent_error);
+        }
       } catch (error) {
         setError(error.message);
       }
@@ -439,6 +459,45 @@ DASHBOARD_HTML = """<!doctype html>
       if (btnViewTranscript && activeCall && activeCall.transcript_text) {
         $('modalTranscriptText').textContent = activeCall.transcript_text;
         $('transcriptModal').showModal();
+      }
+    });
+
+    $('agentToggleBtn').addEventListener('click', async () => {
+      const btn = $('agentToggleBtn');
+      const isRunning = btn.textContent === 'Kill Switch';
+      const token = tokenInput.value.trim();
+      if (!token) {
+        alert('Please enter CALL_API_TOKEN first.');
+        return;
+      }
+      
+      if (isRunning) {
+        if (!confirm('Are you sure you want to trigger the Kill Switch? This will stop the calling process and cut all active calls immediately.')) {
+          return;
+        }
+        try {
+          btn.disabled = true;
+          btn.textContent = 'Stopping...';
+          const res = await api('/agent/kill', { method: 'POST' });
+          alert(res.message || 'Kill Switch triggered.');
+          await loadDashboard();
+        } catch (err) {
+          alert('Failed to kill agent: ' + err.message);
+        } finally {
+          btn.disabled = false;
+        }
+      } else {
+        try {
+          btn.disabled = true;
+          btn.textContent = 'Starting...';
+          const res = await api('/agent/start', { method: 'POST' });
+          alert(res.message || 'Agent started successfully.');
+          await loadDashboard();
+        } catch (err) {
+          alert('Failed to start agent: ' + err.message);
+        } finally {
+          btn.disabled = false;
+        }
       }
     });
 

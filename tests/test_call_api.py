@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import asyncio
+import copy
 import os
-import tempfile
 import types
 import unittest
 from unittest.mock import patch
@@ -9,16 +9,138 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 
+class InMemoryCallStore:
+    def __init__(self, now_func):
+        self.now = now_func
+        self.records = {}
+
+    def _copy(self, record):
+        return copy.deepcopy(record) if record is not None else None
+
+    def _append_event(self, record, *, status, reason=None, sip_status_code=None, sip_status=None, message=None, details=None):
+        record.setdefault("events", []).append(
+            {
+                "id": len(record.setdefault("events", [])) + 1,
+                "status": status,
+                "reason": reason,
+                "sip_status_code": str(sip_status_code) if sip_status_code is not None else None,
+                "sip_status": sip_status,
+                "message": message,
+                "details": details or {},
+                "created_at": self.now(),
+            }
+        )
+
+    def create_call_record(self, record):
+        call_id = str(record["call_id"])
+        created_at = record.get("created_at") or self.now()
+        stored = {
+            "call_id": call_id,
+            "room_name": record.get("room_name") or "",
+            "phone_number": record.get("phone_number") or "",
+            "status": record.get("status") or "dispatching",
+            "reason": record.get("reason"),
+            "sip_status_code": str(record["sip_status_code"]) if record.get("sip_status_code") is not None else None,
+            "sip_status": record.get("sip_status"),
+            "sip_call_id": record.get("sip_call_id"),
+            "participant_identity": record.get("participant_identity"),
+            "participant_status": record.get("participant_status"),
+            "transcript_source": record.get("transcript_source"),
+            "transcript_text": record.get("transcript_text"),
+            "session_report": record.get("session_report") or {},
+            "vobiz_call_uuid": record.get("vobiz_call_uuid"),
+            "vobiz_recording_id": record.get("vobiz_recording_id"),
+            "recording_source": record.get("recording_source"),
+            "recording_url": record.get("recording_url"),
+            "recording_duration_ms": record.get("recording_duration_ms"),
+            "recording_format": record.get("recording_format"),
+            "recording_type": record.get("recording_type"),
+            "error": record.get("error"),
+            "metadata": copy.deepcopy(record.get("metadata") or {}),
+            "created_at": created_at,
+            "updated_at": created_at,
+            "dispatched_at": record.get("dispatched_at"),
+            "dialing_at": record.get("dialing_at"),
+            "answered_at": record.get("answered_at"),
+            "ended_at": record.get("ended_at"),
+            "events": [],
+        }
+        self._append_event(
+            stored,
+            status=stored["status"],
+            reason=stored.get("reason"),
+            sip_status_code=stored.get("sip_status_code"),
+            sip_status=stored.get("sip_status"),
+            message=record.get("event_message") or "Call record created",
+            details=record.get("event_details") or {"room_name": stored["room_name"]},
+        )
+        self.records[call_id] = stored
+        return self._copy(stored)
+
+    def update_call_record(self, call_id, **kwargs):
+        record = self.records.get(call_id)
+        if not record:
+            return False
+        record["updated_at"] = self.now()
+        for key, value in kwargs.items():
+            if key in {"event_message", "event_details"} or value is None:
+                continue
+            if key == "session_report":
+                record["session_report"] = copy.deepcopy(value)
+            elif key == "metadata":
+                record["metadata"] = copy.deepcopy(value)
+            elif key == "sip_status_code":
+                record[key] = str(value)
+            else:
+                record[key] = value
+        self._append_event(
+            record,
+            status=kwargs.get("status") or "updated",
+            reason=kwargs.get("reason"),
+            sip_status_code=kwargs.get("sip_status_code"),
+            sip_status=kwargs.get("sip_status"),
+            message=kwargs.get("event_message"),
+            details=kwargs.get("event_details"),
+        )
+        return True
+
+    def get_call_record(self, call_id):
+        return self._copy(self.records.get(call_id))
+
+    def get_call_record_by_vobiz_call_uuid(self, vobiz_call_uuid):
+        for record in sorted(self.records.values(), key=lambda item: item.get("created_at") or "", reverse=True):
+            if record.get("vobiz_call_uuid") == vobiz_call_uuid:
+                return self._copy(record)
+        return None
+
+    def list_call_records(self, limit=100):
+        records = sorted(self.records.values(), key=lambda item: item.get("created_at") or "", reverse=True)
+        result = []
+        for record in records[:limit]:
+            item = self._copy(record)
+            assert item is not None
+            item["event_count"] = len(record.get("events") or [])
+            result.append(item)
+        return result
+
+    def list_active_call_records(self):
+        active = {"dispatching", "dispatched", "dialing", "answered", "active"}
+        return [
+            self._copy(record)
+            for record in self.records.values()
+            if record.get("status") in active
+        ]
+
+
 class CallApiTestCase(unittest.TestCase):
     def setUp(self):
-        self.tmpdir = tempfile.TemporaryDirectory()
         self.env = patch.dict(
             os.environ,
             {
                 "CALL_API_TOKEN": "test-token",
                 "CALL_API_ALLOWED_COUNTRY_PREFIXES": "+91",
                 "CALL_API_DEFAULT_COUNTRY_CODE": "+91",
-                "CALL_API_DB_PATH": os.path.join(self.tmpdir.name, "calls.sqlite3"),
+                "CALL_API_DATABASE_URL": "postgresql://test_user:test_password@localhost:5432/test_db",
                 "LIVEKIT_AGENT_NAME": "outbound-caller",
                 "LIVEKIT_URL": "wss://test.livekit.cloud",
                 "LIVEKIT_API_KEY": "test-key",
@@ -31,11 +153,23 @@ class CallApiTestCase(unittest.TestCase):
         import call_api
 
         self.call_api = call_api
+        self.store = InMemoryCallStore(call_api.now_iso)
+        self.store_patchers = [
+            patch.object(call_api, "create_call_record", self.store.create_call_record),
+            patch.object(call_api, "update_call_record", self.store.update_call_record),
+            patch.object(call_api, "get_call_record", self.store.get_call_record),
+            patch.object(call_api, "get_call_record_by_vobiz_call_uuid", self.store.get_call_record_by_vobiz_call_uuid),
+            patch.object(call_api, "list_call_records", self.store.list_call_records),
+            patch.object(call_api, "list_active_call_records", self.store.list_active_call_records),
+        ]
+        for patcher in self.store_patchers:
+            patcher.start()
         self.client = TestClient(call_api.app)
 
     def tearDown(self):
+        for patcher in reversed(self.store_patchers):
+            patcher.stop()
         self.env.stop()
-        self.tmpdir.cleanup()
 
     def test_health_endpoint(self):
         response = self.client.get("/health")

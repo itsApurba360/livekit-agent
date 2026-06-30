@@ -1,0 +1,159 @@
+# Google Sheets Calling Automation
+
+This document covers the Google Sheets campaign loop added in `sheet_calling_automation.py`. It is relevant for outbound GST/document-collection campaigns where Sheet 1 is the source queue and Sheet 2 is the call log / next-action tracker.
+
+## Where it fits
+
+```text
+Google Sheet 1 pending rows
+  → sheet_calling_automation.py
+      → POST /calls on call_api.py
+          → LiveKit room + SIP participant + worker dispatch
+              → agent.py support persona campaign rules
+                  → schedule_human_callback tool when a human follow-up is needed
+      → PostgreSQL call status store
+  → sync_completed_calls_to_sheets()
+      → append Sheet 2 call log
+      → update Sheet 1 Last Comment + Count
+```
+
+The automation does **not** replace the worker or Call API. The Call API still owns SIP dialing, status, recordings, and dashboard data. The worker still owns the live conversation.
+
+API, worker, and Sheets sync must point at the same Postgres-backed call status store (`CALL_API_DATABASE_URL` / `CALL_STATUS_DATABASE_URL`).
+
+## Environment
+
+Add these to `.env` and run `uv sync` after pulling the new dependencies:
+
+```env
+GOOGLE_SHEETS_SPREADSHEET_ID=<spreadsheet-id>
+GOOGLE_SHEETS_CREDS_PATH=.google_sheets_creds.json
+LIVEKIT_CALL_API_URL=http://127.0.0.1:8000
+CALL_API_TOKEN=<same token used by call_api.py>
+```
+
+The credentials file is a Google service-account JSON file and must stay uncommitted. `.gitignore` excludes `.google_sheets_creds.json`.
+
+## Expected sheet layout
+
+### Sheet 1: call queue
+
+The automation reads rows with `get_all_records()`, so these headers must exist:
+
+| Header | Usage |
+| --- | --- |
+| `CID` | Unique client identifier used for duplicate detection and Sheet 2 correlation. |
+| `Mobile Number` | Destination phone number passed to `POST /calls`. |
+| `Data Received Status` | Only rows whose value is `Pending` are dialed. |
+| `Purpose/Prompt` | Optional call purpose. Defaults to `GST filing documents collection`. |
+| `Owner name` | Optional `customer_name` for call metadata. |
+| `Company Name` | Optional `company_name` for call metadata. |
+| `Count` | Existing attempt count; incremented after syncing a completed call. |
+
+The sync step updates Sheet 1 by column position:
+
+- Column 8: `Last Comment`
+- Column 9: `Count`
+
+Keep those columns in that order unless the script is updated.
+
+### Sheet 2: call log / next action
+
+The automation appends rows in this exact order:
+
+1. `Client Comment`
+2. `Next Action`
+3. `Next Action Date (DD/MMYYYY)`
+4. `Next Action Time (IST)`
+5. `CID`
+6. `Datetime`
+7. `Recording`
+8. `Trasncript`
+
+The misspellings `DD/MMYYYY` and `Trasncript` are currently part of the sheet contract because the script reads/writes by those labels/positions.
+
+`Next Action` controls future dialing:
+
+- `AI Call` with due date/time at or before now: the automation calls again.
+- `AI Call` with future date/time: skip until due.
+- `Human`: skip AI dialing; a human callback is expected.
+- anything else: skip.
+
+## Running locally
+
+Start the worker and Call API first:
+
+```bash
+set -a && source .env && set +a
+LIVEKIT_AGENT_NAME=outbound-caller-local uv run agent.py start
+```
+
+```bash
+set -a && source .env && set +a
+LIVEKIT_AGENT_NAME=outbound-caller-local uv run uvicorn call_api:app --host 127.0.0.1 --port 8000
+```
+
+Then either run a single automation cycle:
+
+```bash
+set -a && source .env && set +a
+uv run sheet_calling_automation.py
+```
+
+or use the dashboard button. `POST /agent/start` starts a background loop inside the running Call API process; it repeats a cycle roughly every 15 seconds until stopped.
+
+## Dashboard controls and API endpoints
+
+The dashboard at `/dashboard` now includes:
+
+- **Start Agent**: calls `POST /agent/start` to begin the Google Sheets automation loop.
+- **Kill Switch**: calls `POST /agent/kill`, writes `agent_stop.flag`, stops the loop, deletes active LiveKit rooms, and marks active calls as killed.
+- Per-call recording fetch/playback controls.
+
+Related endpoints:
+
+| Endpoint | Auth | Purpose |
+| --- | --- | --- |
+| `GET /agent/status` | Bearer | Return automation running state, active calls, and `agent_error.log` contents. |
+| `POST /agent/start` | Bearer | Start the background Sheets automation loop in the Call API process. |
+| `POST /agent/kill` | Bearer | Stop the loop and terminate all active LiveKit rooms known to the call status store. |
+| `POST /calls/{call_id}/kill` | Bearer | Terminate one call room and mark it killed. |
+
+The loop uses runtime flag/log files in the repo root:
+
+- `agent_running.flag` — created while the background loop is active.
+- `agent_stop.flag` — stop request; consumed by the loop.
+- `agent_error.log` — last Sheets connection/data-fetch error shown in the dashboard.
+
+These files are operational artifacts and should not be committed.
+
+## Conversation behavior for GST/document campaigns
+
+When the outbound call purpose contains `gst`, `document`, `filing`, or `pdf`, `agent.py` appends campaign rules to the support-agent prompt:
+
+- do not collect document details directly;
+- do not ask for OTP/WhatsApp verification;
+- ask when a human executive can call back;
+- if the customer reports blockers or asks for a human, call `schedule_human_callback` immediately;
+- after scheduling, thank the customer in simple Hindi/Hinglish and end the call.
+
+`schedule_human_callback(date_str, time_str, client_notes)` writes these fields into the call record metadata:
+
+```json
+{
+  "next_action": "Human",
+  "next_action_date": "30/06/2026",
+  "next_action_time": "15:00",
+  "client_comment": "Customer requested a human callback."
+}
+```
+
+`sync_completed_calls_to_sheets()` later reads that metadata and writes Sheet 2. Calls without a human callback are logged as `AI Call` unless they failed, in which case `Client Comment` includes the failure reason.
+
+## Operational notes
+
+- Do not run multiple automation loops against the same sheet unless there is an external lock; the local flag files are not distributed locks.
+- The Call API process must stay alive for the dashboard-started background loop to continue.
+- The automation currently posts to `/calls` with a 30-second client timeout. If no-answer dialing regularly exceeds that, increase the script timeout to match the call API's blocking answer/failure behavior.
+- Keep `CALL_API_ALLOWED_COUNTRY_PREFIXES` tight before enabling a sheet-driven campaign.
+- Confirm the sheet data and approved destination scope before starting a real dialing campaign.

@@ -70,6 +70,7 @@ class CallContext:
     call_id: Optional[str] = None
     call_purpose: Optional[str] = None
     requested_by: Optional[str] = None
+    last_conversation_history: Optional[str] = None
 
     @property
     def is_outbound(self) -> bool:
@@ -176,6 +177,20 @@ def _select_agent_type(config_dict: dict[str, Any], caller_status: Any) -> str:
     metadata_agent_type = _agent_type_from_metadata(config_dict.get("agent_type"))
     if metadata_agent_type:
         return metadata_agent_type
+        
+    # Check default_agent from global config
+    default_agent = agent_config.get("default_agent")
+    if default_agent:
+        normalized = default_agent.strip().lower()
+        if "support" in normalized:
+            return "Support"
+        if "sales" in normalized:
+            return "Sales"
+
+    # If this is an outbound call, default to Support
+    if config_dict.get("call_direction") == "outbound":
+        return "Support"
+
     return "Support" if caller_status == "Customer" else "Sales"
 
 
@@ -216,6 +231,7 @@ def _build_call_context(
             call_id=call_id,
             call_purpose=call_purpose,
             requested_by=requested_by,
+            last_conversation_history=config_dict.get("last_conversation_history") or config_dict.get("history"),
         )
 
     if not phone_number:
@@ -232,6 +248,7 @@ def _build_call_context(
         call_id=call_id,
         call_purpose=call_purpose,
         requested_by=requested_by,
+        last_conversation_history=config_dict.get("last_conversation_history") or config_dict.get("history"),
     )
 
 
@@ -427,7 +444,7 @@ def _participant_matches_call(call_context: CallContext, participant: Any) -> bo
 
 
 def _register_call_status_handlers(ctx: agents.JobContext, call_context: CallContext, session: AgentSession) -> None:
-    """Track post-answer SIP state transitions in the SQLite call record."""
+    """Track post-answer SIP state transitions in the PostgreSQL call record."""
     if not call_context.is_outbound or not call_context.call_id or not hasattr(ctx.room, "on"):
         return
 
@@ -691,13 +708,17 @@ def _call_context_prompt(call_context: CallContext) -> str:
         lines.append(f"- Call purpose: {call_context.call_purpose}.")
     if call_context.requested_by:
         lines.append(f"- Requested by: {call_context.requested_by}.")
+    if call_context.last_conversation_history:
+        lines.append(f"- Last conversation history: {call_context.last_conversation_history}.")
 
     if call_context.is_outbound:
         lines.append(
             "- This is an outbound call placed by LSA Office. The customer or lead did not call us in this session. "
             "Do not speak before the callee answers or before they speak first. On your first response after they speak, "
-            "briefly introduce yourself, LSA Office, and the reason for calling. Use the call purpose above as the reason "
-            "when it is present; do not invent a different reason."
+            "introduce yourself as Kavya from LSA Office, and explain the reason/purpose of the call in simple, polite, spoken Hindi/Hinglish. "
+            "Use the call purpose above as the reason when it is present; do not invent a different reason. "
+            "Do NOT state the call purpose verbatim; instead, interpret and simplify it so it sounds natural and conversational to the customer. "
+            "If they remain silent, you will be prompted to speak first."
         )
     elif call_context.is_inbound:
         lines.append(
@@ -757,7 +778,7 @@ async def entrypoint(ctx: agents.JobContext):
     Main entrypoint for the REST-decoupled agent worker.
     Handles both inbound (PSTN/web) and outbound (dial-out) calls.
     """
-    from livekit.plugins import openai, google, noise_cancellation
+    from livekit.plugins import openai, google, ai_coustics
 
     logger.info(f"Connecting to room: {ctx.room.name}")
 
@@ -805,8 +826,9 @@ async def entrypoint(ctx: agents.JobContext):
     caller_status = caller_info.get("status")
     customer_id = caller_info.get("customer_id")
     lead_id = caller_info.get("lead_id")
-    lead_name = caller_info.get("name", "जी")
-    company_name = caller_info.get("company", "हमारी कंपनी")
+    lead_name = config_dict.get("customer_name") or config_dict.get("name") or caller_info.get("name") or "जी"
+    company_name = config_dict.get("company_name") or config_dict.get("company") or caller_info.get("company") or "हमारी कंपनी"
+    customer_id = config_dict.get("customer_id") or config_dict.get("cid") or caller_info.get("customer_id")
 
     agent_type = _select_agent_type(config_dict, caller_status)
     logger.info(f"Launching agent type: {agent_type} (Caller status: {caller_status})")
@@ -850,6 +872,24 @@ async def entrypoint(ctx: agents.JobContext):
         else:
             prompt_base += "\n\nNo Customer is currently linked to this call. You can use the search_customer tool to find a customer by name or phone number."
 
+        # Check if call purpose is a GST / document collection campaign
+        purpose = (call_context.call_purpose or "").lower()
+        is_gst_campaign = any(word in purpose for word in ["gst", "document", "filing", "pdf"])
+        if is_gst_campaign:
+            from datetime import datetime
+            current_date_str = datetime.now().strftime("%d/%m/%Y")
+            prompt_base += (
+                f"\n\n--- CAMPAIGN RULES: GST DOCUMENT COLLECTION & FOLLOW-UP ---\n"
+                f"- This call is for coordinating a follow-up call with a human executive regarding GST document collection. "
+                f"Do NOT attempt to collect document details directly, and do NOT ask for OTP or WhatsApp verification.\n"
+                f"- Inform the customer that LSA Office requires their GST documents for the filing period.\n"
+                f"- Ask when a human executive from our team can call them back to collect the documents. "
+                f"Once they provide a preferred date and time, call the `schedule_human_callback` tool with the details.\n"
+                f"- IMPORTANT: If the customer mentions any problems, blockers, or conflicts (e.g. they cannot find their documents, need help, have travel/other conflicts, or prefer a human), you MUST immediately call the `schedule_human_callback` tool to assign a human callback to them with notes explaining the blockers.\n"
+                f"- The current date is {current_date_str}. Convert relative dates like 'tomorrow' or 'today evening' to actual dates (DD/MM/YYYY) if possible before calling the tool.\n"
+                f"- After scheduling, thank them politely in simple Hindi/Hinglish, then end the call using the `end_call` tool."
+            )
+
         prompt_base += f"\n\n{_call_context_prompt(call_context)}"
 
         return prompt_base
@@ -857,8 +897,15 @@ async def entrypoint(ctx: agents.JobContext):
     system_prompt = get_compiled_prompt(is_verified=False)
 
     try:
-        initial_greeting = initial_greeting_template.format(lead_name=lead_name, company_name=company_name)
-    except Exception:
+        initial_greeting = initial_greeting_template.format(
+            lead_name=lead_name,
+            name=lead_name,
+            company_name=company_name,
+            company=company_name,
+            purpose=call_context.call_purpose or ""
+        )
+    except Exception as err:
+        logger.warning(f"Failed to format initial greeting: {err}")
         initial_greeting = initial_greeting_template
 
     # Setup provider configurations
@@ -912,7 +959,8 @@ async def entrypoint(ctx: agents.JobContext):
         customer_id=customer_id,
         phone_number=phone_number,
         on_verify_success=on_verification_success,
-        ctx=ctx
+        ctx=ctx,
+        call_id=call_context.call_id
     )
 
     # Initialize Realtime AI models
@@ -924,7 +972,7 @@ async def entrypoint(ctx: agents.JobContext):
             api_key=ai_api_key,
             instructions=system_prompt,
         )
-        session = AgentSession(llm=realtime_llm)
+        session = AgentSession(llm=realtime_llm, user_away_timeout=10.0)
     elif provider == "OpenAI":
         custom_tts_enabled = agent_config.get("custom_tts", False)
         custom_tts_voice = agent_config.get("custom_tts_voice", "Aoede")
@@ -941,14 +989,14 @@ async def entrypoint(ctx: agents.JobContext):
                 api_key=google_api_key,
                 voice_name=custom_tts_voice,
             )
-            session = AgentSession(llm=realtime_llm, tts=custom_tts)
+            session = AgentSession(llm=realtime_llm, tts=custom_tts, user_away_timeout=10.0)
         else:
             realtime_llm = openai.realtime.RealtimeModel(
                 model=model,
                 voice=voice.lower() if voice else "alloy",
                 api_key=ai_api_key,
             )
-            session = AgentSession(llm=realtime_llm)
+            session = AgentSession(llm=realtime_llm, user_away_timeout=10.0)
     else:
         raise ValueError(f"Unsupported provider: {provider}")
     fnc_ctx.session = session
@@ -966,8 +1014,101 @@ async def entrypoint(ctx: agents.JobContext):
     _register_call_status_handlers(ctx, call_context, session)
     _register_session_report_handler(ctx, call_context, session)
 
+    # Robust inactivity tracking (10 seconds silence timeout)
+    last_activity_time = asyncio.get_event_loop().time()
+    is_user_speaking = False
+    is_agent_speaking = False
+    has_started_speaking = False
+    silence_trigger_task = None
+
+    def reset_activity():
+        nonlocal last_activity_time
+        last_activity_time = asyncio.get_event_loop().time()
+
+    @session.on("user_state_changed")
+    def on_user_state_changed(ev):
+        nonlocal is_user_speaking, has_started_speaking
+        reset_activity()
+        if ev.new_state == "speaking":
+            is_user_speaking = True
+            has_started_speaking = True
+            if silence_trigger_task and not silence_trigger_task.done():
+                silence_trigger_task.cancel()
+        else:
+            is_user_speaking = False
+        
+        if ev.new_state == "away":
+            logger.info("Inactivity timeout (away): ending call.")
+            session.shutdown()
+
+    @session.on("agent_state_changed")
+    def on_agent_state_changed(ev):
+        nonlocal is_agent_speaking, has_started_speaking
+        reset_activity()
+        if ev.new_state == "speaking":
+            is_agent_speaking = True
+            has_started_speaking = True
+            if silence_trigger_task and not silence_trigger_task.done():
+                silence_trigger_task.cancel()
+        else:
+            is_agent_speaking = False
+
+    @session.on("user_input_transcribed")
+    def on_user_input(ev):
+        nonlocal has_started_speaking
+        has_started_speaking = True
+        if silence_trigger_task and not silence_trigger_task.done():
+            silence_trigger_task.cancel()
+        reset_activity()
+
+    @session.on("conversation_item_added")
+    def on_item_added(ev):
+        nonlocal has_started_speaking
+        has_started_speaking = True
+        if silence_trigger_task and not silence_trigger_task.done():
+            silence_trigger_task.cancel()
+        reset_activity()
+
+    async def inactivity_monitor():
+        try:
+            # Grace period for connection and initial greetings
+            await asyncio.sleep(10)
+            while True:
+                await asyncio.sleep(1)
+                if is_user_speaking or is_agent_speaking:
+                    reset_activity()
+                    continue
+                elapsed = asyncio.get_event_loop().time() - last_activity_time
+                if elapsed > 10.0:
+                    logger.info(f"Silence timeout: no activity for {elapsed:.1f}s. Ending call.")
+                    session.shutdown()
+                    break
+        except asyncio.CancelledError:
+            pass
+
+    monitor_task = asyncio.create_task(inactivity_monitor())
+
+    @session.on("close")
+    def on_close(ev):
+        if monitor_task:
+            monitor_task.cancel()
+        if call_context.call_id:
+            try:
+                record = get_call_record(call_context.call_id)
+                current_status = (record or {}).get("status")
+                if current_status in ["active", "dispatched", "dispatching", "answered"]:
+                    logger.info("Session closed: updating call status to completed")
+                    _safe_update_call_record(
+                        call_context,
+                        status="completed",
+                        reason="session_closed",
+                        event_message="Agent session closed",
+                    )
+            except Exception as err:
+                logger.warning("Failed to perform final call status cleanup on session close: %s", err)
+
     # Start LiveKit Agent Session
-    nc_option = noise_cancellation.BVCTelephony() if agent_config.get("noise_cancellation", False) else None
+    nc_option = ai_coustics.audio_enhancement(model=ai_coustics.EnhancerModel.QUAIL_VF_S) if agent_config.get("noise_cancellation", False) else None
     agent_instance = StandaloneAgent(instructions=system_prompt, tools=agent_tools)
     room_options_kwargs = {
         "audio_input": AudioInputOptions(
@@ -991,7 +1132,24 @@ async def entrypoint(ctx: agents.JobContext):
             instructions=f"[System Note: Introduce yourself to the customer with this greeting: '{initial_greeting}']"
         )
     elif call_context.is_outbound:
-        logger.info("Outbound call: waiting for callee to speak before generating a reply.")
+        logger.info("Outbound call: waiting for callee to speak first.")
+        # Start outbound silence monitor to speak first if caller is silent for 5 seconds
+        async def outbound_silence_trigger():
+            try:
+                await asyncio.sleep(5.0)
+                if not has_started_speaking and not is_user_speaking:
+                    logger.info("Outbound initial silence detected (5 seconds). Agent speaking first.")
+                    # Inject a system note to prompt the LLM to greet the user dynamically
+                    await session.generate_reply(
+                        instructions=(
+                            f"[System Note: The customer has answered but remained silent. "
+                            f"Initiate the call by greeting them dynamically and explaining the purpose: "
+                            f"'{call_context.call_purpose or ''}'. Keep it natural, polite, and simple in Hindi.]"
+                        )
+                    )
+            except asyncio.CancelledError:
+                pass
+        silence_trigger_task = asyncio.create_task(outbound_silence_trigger())
 
 
     # DTMF (keypad) Listener for OTP verification

@@ -9,13 +9,16 @@ dependencies = [
     "livekit-agents",
     "livekit-plugins-openai",
     "livekit-plugins-google",
-    "livekit-plugins-noise-cancellation",
+    "livekit-plugins-ai-coustics",
     "livekit-plugins-silero",
     "requests",
     "python-dotenv",
     "certifi",
     "fastapi",
     "uvicorn[standard]",
+    "gspread",
+    "google-auth",
+    "psycopg[binary]",
 ]
 
 [dependency-groups]

@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+import asyncio
 import json
 import os
 import re
@@ -13,12 +13,13 @@ from call_status_store import (
     create_call_record,
     get_call_record,
     get_call_record_by_vobiz_call_uuid,
+    list_active_call_records,
     list_call_records,
     now_iso,
     update_call_record,
 )
 from dotenv import load_dotenv
-from fastapi import FastAPI, Header, HTTPException, Query, Request
+from fastapi import FastAPI, Header, HTTPException, Query, Request, BackgroundTasks
 from fastapi.responses import HTMLResponse, StreamingResponse
 from livekit import api
 from pydantic import BaseModel, Field, field_validator
@@ -173,7 +174,7 @@ def normalize_phone_number(raw_phone: str) -> str:
 class CallRequest(BaseModel):
     phone_number: str = Field(..., description="Destination phone number, preferably E.164")
     purpose: str = Field(..., description="Short reason the agent should give for the call")
-    agent_type: Optional[str] = Field(default=None, description="Optional override: support or sales")
+    agent_type: Optional[str] = Field(default="support", description="Optional override: support or sales")
     customer_name: Optional[str] = None
     company_name: Optional[str] = None
     requested_by: str = "hermes"
@@ -252,10 +253,23 @@ def dashboard_data(
 ) -> dict[str, Any]:
     _require_auth(authorization)
     calls = list_call_records(limit=limit)
+    active_calls = [c for c in calls if c.get("status") in {"dispatching", "dispatched", "dialing", "answered", "active"}]
+    is_running = len(active_calls) > 0 or os.path.exists("agent_running.flag")
+    
+    agent_error = None
+    if os.path.exists("agent_error.log"):
+        try:
+            with open("agent_error.log", "r") as f:
+                agent_error = f.read().strip()
+        except Exception:
+            pass
+            
     return {
         "ok": True,
         "summary": _dashboard_summary(calls),
         "calls": calls,
+        "agent_running": is_running,
+        "agent_error": agent_error,
     }
 
 
@@ -509,11 +523,150 @@ def refresh_call_recording(
     # Support both header and ?token= (for direct links)
     if token and not (authorization and str(authorization).startswith("Bearer ")):
         authorization = f"Bearer {token}"
+    _require_auth(authorization)
     record = get_call_record(call_id)
     if not record:
         raise HTTPException(status_code=404, detail="Call not found")
     result = _refresh_vobiz_recording_for_call(call_id)
     return {"ok": bool(result and result.get("recording_url")), "recording": result, "call": get_call_record(call_id)}
+
+
+def get_active_calls() -> list[dict[str, Any]]:
+    try:
+        return list_active_call_records()
+    except Exception:
+        return []
+
+
+@app.get("/agent/status")
+def agent_status(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+    _require_auth(authorization)
+    active_calls = get_active_calls()
+    is_running = len(active_calls) > 0 or os.path.exists("agent_running.flag")
+    
+    agent_error = None
+    if os.path.exists("agent_error.log"):
+        try:
+            with open("agent_error.log", "r") as f:
+                agent_error = f.read().strip()
+        except Exception:
+            pass
+            
+    return {
+        "ok": True,
+        "running": is_running,
+        "active_calls": active_calls,
+        "agent_error": agent_error,
+    }
+
+
+async def _run_sheets_automation_wrapper():
+    if os.path.exists("agent_stop.flag"):
+        try:
+            os.remove("agent_stop.flag")
+        except Exception:
+            pass
+    # Create running flag
+    with open("agent_running.flag", "w") as f:
+        f.write("running")
+    try:
+        from sheet_calling_automation import run_sheets_automation
+        import logging
+        logger = logging.getLogger("call-api")
+        
+        while not os.path.exists("agent_stop.flag"):
+            try:
+                await run_sheets_automation()
+            except Exception as loop_err:
+                logger.error(f"Error in sheets automation loop cycle: {loop_err}")
+                
+            # Sleep for 15 seconds, checking for stop flag every second
+            for _ in range(15):
+                if os.path.exists("agent_stop.flag"):
+                    break
+                await asyncio.sleep(1)
+                
+    except Exception as err:
+        import logging
+        logging.getLogger("call-api").error(f"Fatal error in sheets automation wrapper: {err}")
+    finally:
+        try:
+            if os.path.exists("agent_running.flag"):
+                os.remove("agent_running.flag")
+        except Exception:
+            pass
+
+
+@app.post("/agent/start")
+async def start_agent(background_tasks: BackgroundTasks, authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+    _require_auth(authorization)
+    if os.path.exists("agent_running.flag") or len(get_active_calls()) > 0:
+        return {"ok": False, "message": "Agent is already running"}
+    
+    background_tasks.add_task(_run_sheets_automation_wrapper)
+    return {"ok": True, "message": "Agent started successfully"}
+
+
+@app.post("/agent/kill")
+async def kill_agent(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+    _require_auth(authorization)
+    
+    # Create stop flag for the loop
+    with open("agent_stop.flag", "w") as f:
+        f.write("stop")
+    
+    # Remove running flag
+    try:
+        if os.path.exists("agent_running.flag"):
+            os.remove("agent_running.flag")
+    except Exception:
+        pass
+
+    # Find and delete all active rooms in LiveKit to cut calls
+    active_calls = get_active_calls()
+    killed_count = 0
+    for call in active_calls:
+        room_name = call["room_name"]
+        call_id = call["call_id"]
+        try:
+            async with api.LiveKitAPI() as lk:
+                await lk.room.delete_room(api.DeleteRoomRequest(room=room_name))
+            killed_count += 1
+        except Exception:
+            pass
+        
+        # Update PostgreSQL call record to failed/killed
+        update_call_record(
+            call_id,
+            status="failed",
+            reason="killed",
+            event_message="Call manually terminated via global Kill Switch",
+        )
+        
+    return {"ok": True, "message": f"Stop flag set and {killed_count} active calls cut."}
+
+
+@app.post("/calls/{call_id}/kill")
+async def kill_call(call_id: str, authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+    _require_auth(authorization)
+    record = get_call_record(call_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Call not found")
+    
+    room_name = record["room_name"]
+    try:
+        async with api.LiveKitAPI() as lk:
+            await lk.room.delete_room(api.DeleteRoomRequest(room=room_name))
+    except Exception:
+        pass
+    
+    update_call_record(
+        call_id,
+        status="failed",
+        reason="killed",
+        event_message="Call manually terminated via dashboard",
+    )
+    return {"ok": True, "message": "Call terminated successfully."}
 
 
 @app.post("/internal/calls/{call_id}/session-report")

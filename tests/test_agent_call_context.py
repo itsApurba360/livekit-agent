@@ -335,10 +335,11 @@ class AgentCallContextTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(agent._agent_type_from_metadata("unknown"))
 
     def test_select_agent_type_honors_metadata_override(self):
-        self.assertEqual(agent._select_agent_type({"agent_type": "sales"}, "Customer"), "Sales")
-        self.assertEqual(agent._select_agent_type({"agent_type": "support"}, "Unknown"), "Support")
-        self.assertEqual(agent._select_agent_type({}, "Customer"), "Support")
-        self.assertEqual(agent._select_agent_type({}, "Lead"), "Sales")
+        with patch.dict(agent.agent_config, {}, clear=True):
+            self.assertEqual(agent._select_agent_type({"agent_type": "sales"}, "Customer"), "Sales")
+            self.assertEqual(agent._select_agent_type({"agent_type": "support"}, "Unknown"), "Support")
+            self.assertEqual(agent._select_agent_type({}, "Customer"), "Support")
+            self.assertEqual(agent._select_agent_type({}, "Lead"), "Sales")
 
     async def test_ensure_outbound_participant_dials_with_trunk_and_waits(self):
         ctx = FakeContext(FakeRoom(name="agent_call_abc123"))

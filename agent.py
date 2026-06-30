@@ -260,7 +260,7 @@ async def entrypoint(ctx: agents.JobContext):
     Main entrypoint for the REST-decoupled agent worker.
     Handles both inbound (PSTN/web) and outbound (dial-out) calls.
     """
-    from livekit.plugins import openai, google, ai_coustics
+    from livekit.plugins import openai, google
 
     logger.info(f"Connecting to room: {ctx.room.name}")
 
@@ -579,7 +579,14 @@ async def entrypoint(ctx: agents.JobContext):
                 logger.warning("Failed to perform final call status cleanup on session close: %s", err)
 
     # Start LiveKit Agent Session
-    nc_option = ai_coustics.audio_enhancement(model=ai_coustics.EnhancerModel.QUAIL_VF_S) if agent_config.get("noise_cancellation", False) else None
+    nc_option = None
+    if agent_config.get("noise_cancellation", False):
+        try:
+            from livekit.plugins import ai_coustics
+
+            nc_option = ai_coustics.audio_enhancement(model=ai_coustics.EnhancerModel.QUAIL_VF_S)
+        except ImportError as err:
+            logger.warning("Noise cancellation disabled; ai_coustics plugin unavailable: %s", err)
     agent_instance = StandaloneAgent(instructions=system_prompt, tools=agent_tools)
     room_options_kwargs = {
         "audio_input": AudioInputOptions(

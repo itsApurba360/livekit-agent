@@ -1,8 +1,8 @@
 {
   "default_agent": "support_agent",
-  "provider": "OpenAI",
-  "model": "gpt-realtime-2",
-  "voice": "coral",
+  "provider": "Google",
+  "model": "gemini-3.1-flash-live-preview",
+  "voice": "Zephyr",
   "company_name": "LSA Office",
   "noise_cancellation": false,
   "custom_tts": false,

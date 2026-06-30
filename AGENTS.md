@@ -229,7 +229,13 @@ Tests use Python's `unittest` framework despite `pytest` in dev dependencies. Ma
 - SIP failure `object cannot be found` usually means `OUTBOUND_TRUNK_ID` is wrong. SIP `486 Busy Here` maps to `failed_busy`; `480 Temporarily Unavailable` maps best-effort to `failed_unreachable`; `408 Request Timeout` maps to `failed_no_answer`.
 - Frappe lookup failures (for example local `127.0.0.1:8002` refused) fall back to an unknown lead and do not by themselves block outbound dialing.
 
-The worker is deployed to LiveKit Cloud (which runs the Dockerfile with `uv run agent.py start` under the hood). The worker connects outbound to LiveKit.
+The worker is deployed to LiveKit Cloud (which runs the Dockerfile with `uv run agent.py start` under the hood) using:
+
+```bash
+lk agent deploy --project "360ithub" --region ap-south --yes
+```
+
+The worker connects outbound to LiveKit.
 
 The Call API is deployed as a separate service/process using:
 

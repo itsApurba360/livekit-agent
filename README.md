@@ -205,3 +205,11 @@ uv run uvicorn call_api:app --host 0.0.0.0 --port 8000
 Expose it only behind HTTPS, bearer auth, and tight country-prefix restrictions. The API service needs LiveKit credentials because it creates rooms, dispatches the worker, and creates SIP participants. Hermes should receive only `LIVEKIT_CALL_API_URL` and `LIVEKIT_CALL_API_TOKEN`, never LiveKit API secrets.
 
 For Dokploy details, see [docs/dokploy.md](docs/dokploy.md). For Hermes plugin wiring, see [docs/hermes-call-control.md](docs/hermes-call-control.md).
+
+### Deploying the Cloud Worker
+
+To deploy code updates to the LiveKit Cloud hosted worker, run:
+
+```bash
+lk agent deploy --project "360ithub" --region ap-south --yes
+```

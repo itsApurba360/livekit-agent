@@ -255,7 +255,7 @@ class AgentCallContextTestCase(unittest.IsolatedAsyncioTestCase):
         )
 
     def test_agent_configs_have_outbound_greetings(self):
-        for agent_key in ("support_agent", "sales_agent"):
+        for agent_key in ("support_agent",):
             with self.subTest(agent_key=agent_key):
                 agent_settings = agent.agent_config[agent_key]
                 self.assertIn("outbound_initial_greeting", agent_settings)
@@ -275,10 +275,10 @@ class AgentCallContextTestCase(unittest.IsolatedAsyncioTestCase):
 
     def test_select_agent_type_honors_metadata_override(self):
         with patch.dict(agent.agent_config, {}, clear=True):
-            self.assertEqual(agent._select_agent_type({"agent_type": "sales"}, "Customer"), "Sales")
+            self.assertEqual(agent._select_agent_type({"agent_type": "sales"}, "Customer"), "Support")
             self.assertEqual(agent._select_agent_type({"agent_type": "support"}, "Unknown"), "Support")
             self.assertEqual(agent._select_agent_type({}, "Customer"), "Support")
-            self.assertEqual(agent._select_agent_type({}, "Lead"), "Sales")
+            self.assertEqual(agent._select_agent_type({}, "Lead"), "Support")
 
     async def test_ensure_outbound_participant_dials_with_trunk_and_waits(self):
         ctx = FakeContext(FakeRoom(name="agent_call_abc123"))

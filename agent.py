@@ -29,13 +29,18 @@ logger = logging.getLogger("remote-agent")
 
 # Load Local Configuration File
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "agent_config.json")
-try:
-    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-        agent_config = json.load(f)
-    logger.info("Successfully loaded agent configurations from agent_config.json.")
-except Exception as config_err:
-    logger.error(f"Failed to load agent_config.json: {config_err}. Using hardcoded fallbacks.")
-    agent_config = {}
+with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+    agent_config = json.load(f)
+
+# Validate required configuration keys
+if "support_agent" not in agent_config:
+    raise KeyError("Missing required configuration block: 'support_agent' in agent_config.json")
+
+for key in ["system_prompt", "initial_greeting", "inbound_initial_greeting", "outbound_initial_greeting"]:
+    if key not in agent_config["support_agent"]:
+        raise KeyError(f"Missing required configuration key: 'support_agent.{key}' in agent_config.json")
+
+logger.info("Successfully loaded agent configurations from agent_config.json.")
 call_context_helpers.set_agent_config(agent_config)
 
 # Default Configurations fallback
@@ -103,24 +108,8 @@ def _agent_type_from_metadata(value: Any) -> Optional[str]:
 
 
 def _select_agent_type(config_dict: dict[str, Any], caller_status: Any) -> str:
-    metadata_agent_type = _agent_type_from_metadata(config_dict.get("agent_type"))
-    if metadata_agent_type:
-        return metadata_agent_type
-        
-    # Check default_agent from global config
-    default_agent = agent_config.get("default_agent")
-    if default_agent:
-        normalized = default_agent.strip().lower()
-        if "support" in normalized:
-            return "Support"
-        if "sales" in normalized:
-            return "Sales"
-
-    # If this is an outbound call, default to Support
-    if config_dict.get("call_direction") == "outbound":
-        return "Support"
-
-    return "Support" if caller_status == "Customer" else "Sales"
+    # Always return Support agent as requested by configuration
+    return "Support"
 
 
 def _build_call_context(
@@ -327,20 +316,12 @@ async def entrypoint(ctx: agents.JobContext):
     logger.info(f"Launching agent type: {agent_type} (Caller status: {caller_status})")
 
     # Fetch configuration templates
-    if agent_type == "Support":
-        agent_settings = agent_config.get("support_agent", {})
-        fallback_prompt = "You are Kavya, support assistant. Help customer with their queries."
-        fallback_greeting = "नमस्ते, LSA Office में आपका स्वागत है। मैं काव्या हूँ। मैं आपकी क्या मदद कर सकती हूँ?"
-    else:
-        agent_settings = agent_config.get("sales_agent", {})
-        fallback_prompt = "You are Nandini, sales assistant. Qualify the lead named {lead_name}."
-        fallback_greeting = "नमस्ते {lead_name} जी, मैं नंदिनी बोल रही हूँ एलएसए ऑफिस से।"
-
-    system_prompt_template = agent_settings.get("system_prompt", fallback_prompt)
+    agent_settings = agent_config["support_agent"]
+    system_prompt_template = agent_settings["system_prompt"]
     initial_greeting_template = _select_initial_greeting_template(
         agent_settings,
         call_context,
-        fallback_greeting,
+        "",
     )
 
     # Resolve dynamic system prompt compilation

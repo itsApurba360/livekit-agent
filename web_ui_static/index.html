@@ -154,7 +154,7 @@
 
         .profile-selector {
             display: grid;
-            grid-template-columns: repeat(3, 1fr);
+            grid-template-columns: repeat(2, 1fr);
             gap: 0.5rem;
         }
 
@@ -503,6 +503,7 @@
                 <div class="profile-selector">
                     <button class="profile-btn active" id="profile-support" onclick="selectProfile('support')">Customer</button>
                     <button class="profile-btn" id="profile-sales" onclick="selectProfile('sales')">Sales Lead</button>
+                    <button class="profile-btn" id="profile-outbound" onclick="selectProfile('outbound')">Mock Outbound</button>
                     <button class="profile-btn" id="profile-custom" onclick="selectProfile('custom')">Custom</button>
                 </div>
             </div>
@@ -603,6 +604,12 @@
                 agent: "Nandini (Sales)",
                 entity: "Lead DB"
             },
+            outbound: {
+                phone: "9876543210",
+                name: "Mock Lead",
+                agent: "Nandini (Outbound)",
+                entity: "Mock call metadata"
+            },
             custom: {
                 phone: "",
                 name: "",
@@ -694,6 +701,7 @@
             const phoneInput = document.getElementById('phone_number').value.trim();
             const nameInput = document.getElementById('participant_name').value.trim() || 'Web Tester';
             const micDeviceId = document.getElementById('mic-select').value;
+            const activeProfile = document.querySelector('.profile-btn.active')?.id.replace('profile-', '') || 'custom';
 
             if (!phoneInput || !phoneInput.match(/^\d+$/)) {
                 logMessage("error", "Please provide a valid numeric caller phone number.");
@@ -723,8 +731,14 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         room_name: roomName,
+                        phone_number: phoneInput,
                         participant_identity: `web_${phoneInput}`,
-                        participant_name: nameInput
+                        participant_name: nameInput,
+                        call_direction: activeProfile === 'outbound' ? 'outbound' : 'web',
+                        outbound_dial_mode: activeProfile === 'outbound' ? 'mock' : undefined,
+                        call_purpose: activeProfile === 'outbound' ? 'Local mock outbound call test' : undefined,
+                        requested_by: activeProfile === 'outbound' ? 'web_ui_mock' : undefined,
+                        agent_type: activeProfile === 'sales' || activeProfile === 'outbound' ? 'sales' : 'support'
                     })
                 });
 

@@ -61,7 +61,16 @@ class WebUITesterHandler(http.server.SimpleHTTPRequestHandler):
                 phone_number = room_name.split('_')[0] if '_' in room_name else None
                 
                 # Add room configuration to automatically dispatch the agent worker
-                dispatch_metadata = json.dumps({"phone_number": phone_number}) if phone_number else "{}"
+                metadata = {
+                    "phone_number": body.get("phone_number") or phone_number,
+                    "call_direction": body.get("call_direction"),
+                    "outbound_dial_mode": body.get("outbound_dial_mode"),
+                    "call_purpose": body.get("call_purpose"),
+                    "requested_by": body.get("requested_by"),
+                    "agent_type": body.get("agent_type"),
+                }
+                metadata = {key: value for key, value in metadata.items() if value}
+                dispatch_metadata = json.dumps(metadata)
                 room_config = api.RoomConfiguration(
                     agents=[
                         api.RoomAgentDispatch(

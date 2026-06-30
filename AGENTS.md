@@ -44,6 +44,14 @@ Never commit `.env`, Google service-account JSON, runtime flag files, or logs.
 > [!NOTE]
 > The Agent Worker (`agent.py`) is deployed and hosted on **LiveKit Cloud** (agent ID: `CA_ct6s7UGyzoju`). **No local worker process needs to be run locally going forward.** All environments dispatch and connect to this cloud worker (`outbound-caller-prod`).
 
+For local worker testing, use a distinct dispatch name so the local process does not compete with production:
+
+```bash
+set -a && source .env && set +a
+LIVEKIT_AGENT_NAME=outbound-caller-local .venv/bin/python agent.py dev
+```
+
+If `uv run agent.py dev` works in the current environment, it is fine to use. On some local platforms `uv run` may fail resolving `onnxruntime==1.27.0`; use the existing `.venv/bin/python` command above in that case.
 
 Hermes, the dashboard, and sheet automation trigger outbound PSTN calls through `call_api.py`. Run the Call API:
 
@@ -86,11 +94,14 @@ See `docs/google-sheets-calling-automation.md` for sheet schema and operational 
 ### Running the Web UI Sandbox Tester
 
 ```bash
-uv run web_ui_server.py
-# Open http://localhost:8080 in browser, select profile, connect, speak to test.
+set -a && source .env && set +a
+LIVEKIT_AGENT_NAME=outbound-caller-local .venv/bin/python web_ui_server.py
+# Open http://localhost:8080 in browser, select a profile, connect, speak to test.
 ```
 
-The web UI connects to the LiveKit Cloud project where the hosted agent worker handles the session.
+The web UI connects to the LiveKit Cloud project and dispatches whichever worker name is configured in `LIVEKIT_AGENT_NAME`. Use `outbound-caller-local` when testing a local worker.
+
+Use the **Mock Outbound** profile to test outbound conversation behavior without placing a PSTN call. It sends `call_direction=outbound` and `outbound_dial_mode=mock`, so the worker keeps outbound prompting and waits for the user to speak first, but skips SIP participant creation.
 
 ### Running Tests
 
@@ -206,6 +217,7 @@ Tests use Python's `unittest` framework despite `pytest` in dev dependencies. Ma
 - DTMF/OTP, WhatsApp, PDF, and customer-query tools are legacy Frappe surfaces and are not exposed to the model right now.
 - All tool responses are natural-language strings intended for voice; raw JSON/IDs are summarized.
 - For local call-control testing, run both the worker and API with the same `.env` and `LIVEKIT_AGENT_NAME=outbound-caller-local`.
+- For local browser-only outbound testing, use the web UI **Mock Outbound** profile. This is intentionally not a telephony test: `outbound_dial_mode=mock` skips SIP dialing and only exercises local worker dispatch, metadata parsing, prompts, tools, and realtime audio.
 - With API-owned dialing, `POST /calls` intentionally blocks until answer/failure and returns the immediate SIP setup outcome. Keep client timeouts long enough for ringing/no-answer.
 - The Call API owns final SIP failure status. Worker disconnect handlers should not overwrite `failed_*` records with `completed` after rejected/busy/no-answer legs.
 - In local, Dokploy, LiveKit Cloud, or any separate-container deployment, set the same Postgres URL (`CALL_API_DATABASE_URL` or `CALL_STATUS_DATABASE_URL`) on both API and worker so status writes, `schedule_human_callback` metadata, dashboard data, and Google Sheets sync all use one shared store.

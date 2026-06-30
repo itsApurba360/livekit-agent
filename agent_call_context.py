@@ -229,6 +229,10 @@ def _dialed_by_api(config_dict: dict[str, Any]) -> bool:
     return str(config_dict.get("outbound_dial_mode") or "").strip().lower() == "api"
 
 
+def _dialed_by_mock(config_dict: dict[str, Any]) -> bool:
+    return str(config_dict.get("outbound_dial_mode") or "").strip().lower() == "mock"
+
+
 def _safe_update_call_record(call_context: CallContext, **updates: Any) -> None:
     """Persist call status when a call_id is available, without breaking the worker."""
     if not call_context.call_id:
@@ -610,6 +614,9 @@ async def _prepare_outbound_participant(
     call_context: CallContext,
     config_dict: dict[str, Any],
 ) -> CallContext:
+    if call_context.is_outbound and _dialed_by_mock(config_dict):
+        logger.info("Mock outbound call: skipping SIP participant setup.")
+        return call_context
     if call_context.is_outbound and _dialed_by_api(config_dict):
         return await _wait_for_api_dialed_outbound_participant(ctx, call_context, config_dict)
     return await _ensure_outbound_participant(ctx, call_context, config_dict)

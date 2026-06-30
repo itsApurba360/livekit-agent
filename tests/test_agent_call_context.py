@@ -325,6 +325,18 @@ class AgentCallContextTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(updated_context.sip_call_status, "active")
         self.assertEqual(ctx.api.sip.requests, [])
 
+    async def test_mock_outbound_skips_sip_setup(self):
+        ctx = FakeContext(FakeRoom(name="agent_call_abc123"))
+        config = {"phone_number": "+919876543210", "outbound_dial_mode": "mock"}
+        call_context = agent.CallContext(direction="outbound", phone_number="+919876543210")
+
+        updated_context = await agent._prepare_outbound_participant(ctx, call_context, config)
+
+        self.assertIs(updated_context, call_context)
+        self.assertIsNone(ctx.shutdown_reason)
+        self.assertTrue(updated_context.ready)
+        self.assertEqual(ctx.api.sip.requests, [])
+
     def test_sip_failure_reason_maps_common_outcomes(self):
         self.assertEqual(agent._sip_failure_reason("486", "Busy Here"), "busy")
         self.assertEqual(agent._sip_failure_reason("480", "Temporarily Unavailable"), "unreachable")

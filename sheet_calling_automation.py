@@ -4,10 +4,11 @@ import re
 import logging
 import asyncio
 import requests
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import gspread
 from google.oauth2.service_account import Credentials
 from dotenv import load_dotenv
+from gspread.utils import rowcol_to_a1
 
 # Load env
 load_dotenv()
@@ -16,12 +17,69 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("sheet-automation")
 
 STOP_FLAG = "agent_stop.flag"
+DEFAULT_MAX_AI_ATTEMPTS = 3
+
+SHEET1_WORKFLOW_HEADERS = [
+    "Workflow Status",
+    "AI Enabled",
+    "Assigned To",
+    "Human Status",
+    "Help Needed Notes",
+    "Last Call Outcome",
+    "Next AI Call Date",
+    "Next AI Call Time",
+    "AI Attempt Count",
+    "Max AI Attempts",
+]
+
+SHEET2_EXTRA_HEADERS = [
+    "Actor",
+    "Call ID",
+    "Call Outcome",
+    "Help Needed Notes",
+    "Assigned To",
+]
 
 def check_stop_requested() -> bool:
     if os.path.exists(STOP_FLAG):
         logger.info("Stop requested via flag file. Aborting loop.")
         return True
     return False
+
+def _headers(sheet) -> list[str]:
+    return [str(header).strip() for header in sheet.row_values(1)]
+
+def _header_index(headers: list[str]) -> dict[str, int]:
+    return {header: idx + 1 for idx, header in enumerate(headers) if header}
+
+def _int_value(value, default: int = 0) -> int:
+    try:
+        return int(value or default)
+    except (TypeError, ValueError):
+        return default
+
+def _update_row_by_header(sheet, row_index: int, updates: dict[str, object], headers: list[str] | None = None) -> None:
+    cols = _header_index(headers or _headers(sheet))
+    data = [
+        {"range": rowcol_to_a1(row_index, cols[header]), "values": [[value]]}
+        for header, value in updates.items()
+        if header in cols
+    ]
+    if data:
+        sheet.batch_update(data)
+
+def _format_schedule(dt: datetime) -> tuple[str, str]:
+    return dt.strftime("%d/%m/%Y"), dt.strftime("%H:%M")
+
+def _next_retry_datetime(reason: str | None, now: datetime) -> datetime:
+    if reason == "busy":
+        return now + timedelta(hours=1)
+    if reason in {"no_answer", "unreachable"}:
+        return now + timedelta(days=1)
+    return now + timedelta(days=1)
+
+def _is_human_handoff(next_action: str) -> bool:
+    return next_action.strip().lower() == "human"
 
 def get_google_sheets_client():
     creds_path = os.environ.get("GOOGLE_SHEETS_CREDS_PATH", ".google_sheets_creds.json")
@@ -143,7 +201,10 @@ def sync_completed_calls_to_sheets(sheet):
     sheet2 = sheet.get_worksheet(1)
     
     # Pre-cache Sheet 1 records for looking up row index of matching CID
+    sheet1_headers = _headers(sheet1)
     sheet1_rows = sheet1.get_all_records()
+    ist = timezone(timedelta(hours=5, minutes=30))
+    now = datetime.now(ist).replace(tzinfo=None)
     
     for c in unsynced_calls:
         if check_stop_requested():
@@ -152,20 +213,56 @@ def sync_completed_calls_to_sheets(sheet):
         cid = c["parsed_metadata"]["cid"]
         call_id = c["call_id"]
         
-        # Read Human Callback metadata set by the schedule_human_callback tool
-        next_action = c["parsed_metadata"].get("next_action", "")
-        if next_action != "Human":
-            next_action = "AI Call"
-            
+        status = str(c.get("status") or "")
+        reason = c.get("reason") or ""
+        matching_row_index = -1
+        current_count = 0
+        current_ai_attempt_count = 0
+        max_attempts = DEFAULT_MAX_AI_ATTEMPTS
+        current_assignee = ""
+        matching_row = None
+        for idx, r in enumerate(sheet1_rows):
+            if str(r.get("CID")) == str(cid):
+                matching_row_index = idx + 2
+                matching_row = r
+                current_count = _int_value(r.get("Count"), 0)
+                current_ai_attempt_count = _int_value(r.get("AI Attempt Count"), current_count)
+                max_attempts = _int_value(r.get("Max AI Attempts"), DEFAULT_MAX_AI_ATTEMPTS)
+                current_assignee = str(r.get("Assigned To") or "")
+                break
+
+        ai_attempt_count = current_ai_attempt_count + 1
+        next_action = str(c["parsed_metadata"].get("next_action") or "").strip()
         next_action_date = c["parsed_metadata"].get("next_action_date", "")
         next_action_time = c["parsed_metadata"].get("next_action_time", "")
         client_comment = c["parsed_metadata"].get("client_comment", "")
+        help_needed_notes = c["parsed_metadata"].get("help_needed_notes", "")
         
         # Fallback text if call failed without speaking
-        if not client_comment and c["status"].startswith("failed"):
-            client_comment = f"Call failed: {c.get('reason') or 'unknown reason'}"
+        if not client_comment and status.startswith("failed"):
+            client_comment = f"Call failed: {reason or 'unknown reason'}"
         elif not client_comment:
             client_comment = "Call completed."
+
+        retryable_failure = status in {"failed_busy", "failed_no_answer", "failed_unreachable"}
+        if not next_action:
+            if retryable_failure and ai_attempt_count < max_attempts:
+                next_action = "AI Call"
+            elif status.startswith("failed") and ai_attempt_count >= max_attempts:
+                next_action = "Human"
+                help_needed_notes = help_needed_notes or f"Max AI attempts reached after {reason or status}."
+            elif status.startswith("failed"):
+                next_action = "Human"
+                help_needed_notes = help_needed_notes or client_comment
+            else:
+                next_action = "AI Call"
+
+        if next_action == "AI Call" and (not next_action_date or not next_action_time):
+            retry_at = _next_retry_datetime(reason if status.startswith("failed") else None, now)
+            next_action_date, next_action_time = _format_schedule(retry_at)
+
+        if _is_human_handoff(next_action):
+            help_needed_notes = help_needed_notes or client_comment
 
         # Fetch recording and transcript from the call status store
         recording_url = c.get("recording_url") or ""
@@ -176,14 +273,15 @@ def sync_completed_calls_to_sheets(sheet):
         transcript = c.get("transcript_text") or ""
         call_time = c.get("dispatched_at") or c.get("created_at") or ""
         
-        # Format call_time to human readable
+        # Format call_time to human readable in IST
         try:
             parsed_time = datetime.fromisoformat(call_time.replace("Z", "+00:00"))
+            ist = timezone(timedelta(hours=5, minutes=30))
+            parsed_time = parsed_time.astimezone(ist)
             formatted_call_time = parsed_time.strftime("%m/%d/%Y %H:%M:%S")
         except Exception:
             formatted_call_time = call_time
 
-        # Sheet 2 columns: Client Comment,Next Action,Next Action Date (DD/MMYYYY),Next Action Time (IST),CID,Datetime,Recording,Trasncript
         new_row = [
             client_comment,       # Client Comment
             next_action,          # Next Action
@@ -192,29 +290,48 @@ def sync_completed_calls_to_sheets(sheet):
             cid,                  # CID
             formatted_call_time,  # Datetime
             recording_url,        # Recording
-            transcript            # Trasncript (with typo)
+            transcript,           # Trasncript (with typo)
+            "AI",                 # Actor
+            call_id,              # Call ID
+            status,               # Call Outcome
+            help_needed_notes,    # Help Needed Notes
+            current_assignee,     # Assigned To
         ]
         
         try:
             # Append log to Sheet 2
             sheet2.append_row(new_row)
             logger.info(f"Appended call log to Sheet 2 for CID {cid}")
-            
-            # Find matching row in Sheet 1 to update Last Comment, Count, and Data Status
-            matching_row_index = -1
-            current_count = 0
-            for idx, r in enumerate(sheet1_rows):
-                if str(r.get("CID")) == str(cid):
-                    matching_row_index = idx + 2
-                    try:
-                        current_count = int(r.get("Count") or 0)
-                    except ValueError:
-                        current_count = 0
-                    break
-            
+
             if matching_row_index != -1:
-                sheet1.update_cell(matching_row_index, 8, client_comment) # Last Comment
-                sheet1.update_cell(matching_row_index, 9, current_count + 1) # Count
+                updates = {
+                    "Last Comment": client_comment,
+                    "Count": current_count + 1,
+                    "AI Attempt Count": ai_attempt_count,
+                    "Last Call Outcome": reason or status,
+                    "Next AI Call Date": next_action_date if next_action == "AI Call" else "",
+                    "Next AI Call Time": next_action_time if next_action == "AI Call" else "",
+                }
+                if _is_human_handoff(next_action):
+                    updates.update({
+                        "Workflow Status": "Human Help Needed",
+                        "AI Enabled": "No",
+                        "Human Status": "Open",
+                        "Help Needed Notes": help_needed_notes,
+                    })
+                elif next_action == "AI Call":
+                    updates.update({
+                        "Workflow Status": "AI Scheduled",
+                        "AI Enabled": "Yes",
+                    })
+                elif next_action in {"Documents Received", "Closed", "Close"}:
+                    updates.update({
+                        "Workflow Status": "Documents Received" if next_action == "Documents Received" else "Closed",
+                        "AI Enabled": "No",
+                    })
+                _update_row_by_header(sheet1, matching_row_index, updates, sheet1_headers)
+                if matching_row is not None:
+                    matching_row.update(updates)
                 logger.info(f"Updated Sheet 1 row {matching_row_index} for CID {cid}")
 
             # Mark the persisted call as synced
@@ -278,7 +395,8 @@ async def run_sheets_automation():
 
     logger.info(f"Fetched {len(sheet1_rows)} clients and {len(sheet2_rows)} logs.")
     
-    now = datetime.now()
+    ist = timezone(timedelta(hours=5, minutes=30))
+    now = datetime.now(ist).replace(tzinfo=None)
     
     for row in sheet1_rows:
         if check_stop_requested():
@@ -286,19 +404,44 @@ async def run_sheets_automation():
             
         cid = str(row.get("CID") or "").strip()
         status = str(row.get("Data Received Status") or "").strip().lower()
+        workflow_status = str(row.get("Workflow Status") or "").strip().lower()
+        ai_enabled = str(row.get("AI Enabled") or "Yes").strip().lower()
+        ai_attempt_count = _int_value(row.get("AI Attempt Count"), _int_value(row.get("Count"), 0))
+        max_attempts = _int_value(row.get("Max AI Attempts"), DEFAULT_MAX_AI_ATTEMPTS)
         
         if not cid:
             continue
             
         if status != "pending":
             continue
+
+        if ai_enabled in {"no", "false", "0"}:
+            logger.info(f"Client CID {cid} has AI disabled. Skipping.")
+            continue
+
+        if workflow_status in {"human help needed", "documents received", "closed", "do not call"}:
+            logger.info(f"Client CID {cid} workflow status is '{workflow_status}'. Skipping AI call.")
+            continue
+
+        if ai_attempt_count >= max_attempts:
+            logger.info(f"Client CID {cid} reached max AI attempts ({max_attempts}). Skipping.")
+            continue
             
         # Find all call logs in Sheet 2 for this client CID
         client_logs = [log for log in sheet2_rows if str(log.get("CID")).strip() == cid]
         
         should_call = False
+        row_next_date = row.get("Next AI Call Date")
+        row_next_time = row.get("Next AI Call Time")
         
-        if not client_logs:
+        if row_next_date and row_next_time:
+            scheduled_time = parse_schedule(row_next_date, row_next_time)
+            if scheduled_time <= now:
+                logger.info(f"Client CID {cid} has Sheet 1 AI call due at {scheduled_time}. Triggering call.")
+                should_call = True
+            else:
+                logger.info(f"Client CID {cid} has Sheet 1 AI call in future at {scheduled_time}. Skipping.")
+        elif not client_logs:
             logger.info(f"Client CID {cid} has never been called. Triggering initial call.")
             should_call = True
         else:

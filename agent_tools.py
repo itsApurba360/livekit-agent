@@ -500,6 +500,7 @@ class CustomerQueryTools(llm.ToolContext):
                 metadata["next_action_time"] = time_str
                 if client_notes:
                     metadata["client_comment"] = client_notes
+                    metadata["help_needed_notes"] = client_notes
                 update_call_record(
                     self.call_id,
                     metadata=metadata,
@@ -511,3 +512,33 @@ class CustomerQueryTools(llm.ToolContext):
                 logger.error(f"Failed to update callback in PostgreSQL for {self.call_id}: {e}")
                 return f"Error scheduling callback in database: {str(e)}."
         return "Failed to schedule callback: Call ID not available."
+
+    @llm.function_tool(description="Schedule the next AI follow-up call when the customer is not ready yet and does not need human help.")
+    async def schedule_ai_followup(self, date_str: str, time_str: str, client_notes: Optional[str] = None):
+        """
+        Args:
+            date_str: Date for the next AI call in DD/MM/YYYY format (e.g. '30/06/2026').
+            time_str: Time in 24-hour IST format (e.g. '14:30').
+            client_notes: Optional notes or context about why AI should call again later.
+        """
+        logger.info(f"Scheduling AI follow-up on {date_str} at {time_str}. Notes: {client_notes}")
+        if self.call_id:
+            try:
+                record = get_call_record(self.call_id)
+                metadata = record.get("metadata") or {} if record else {}
+                metadata["next_action"] = "AI Call"
+                metadata["next_action_date"] = date_str
+                metadata["next_action_time"] = time_str
+                if client_notes:
+                    metadata["client_comment"] = client_notes
+                update_call_record(
+                    self.call_id,
+                    metadata=metadata,
+                    event_message=f"Scheduled AI follow-up on {date_str} at {time_str}"
+                )
+                logger.info(f"Successfully saved AI follow-up in PostgreSQL metadata for {self.call_id}")
+                return f"AI follow-up successfully scheduled for {date_str} at {time_str}."
+            except Exception as e:
+                logger.error(f"Failed to update AI follow-up in PostgreSQL for {self.call_id}: {e}")
+                return f"Error scheduling AI follow-up in database: {str(e)}."
+        return "Failed to schedule AI follow-up: Call ID not available."

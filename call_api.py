@@ -1,9 +1,12 @@
 import asyncio
 import json
+import logging
 import os
 import re
 import uuid
 from collections import Counter
+
+logger = logging.getLogger("call-api")
 from typing import Any, Optional
 from urllib.parse import parse_qs
 
@@ -391,6 +394,29 @@ async def _delete_room_quietly(room_name: str) -> None:
         pass
 
 
+async def _wait_for_agent_to_join(room_name: str, timeout_seconds: float = 10.0) -> bool:
+    # ponytail: wait for agent to prevent races, fallback to dial if timeout
+    start_time = asyncio.get_event_loop().time()
+    logger.info(f"Waiting for agent to join room {room_name} (timeout: {timeout_seconds}s)")
+    while asyncio.get_event_loop().time() - start_time < timeout_seconds:
+        try:
+            async with api.LiveKitAPI() as lk:
+                res = await lk.room.list_participants(api.ListParticipantsRequest(room=room_name))
+                non_sip_participants = [
+                    p for p in res.participants
+                    if not p.identity.startswith("sip_")
+                ]
+                if non_sip_participants:
+                    elapsed = asyncio.get_event_loop().time() - start_time
+                    logger.info(f"Agent worker {non_sip_participants[0].identity} detected in room {room_name} after {elapsed:.2f}s")
+                    return True
+        except Exception as err:
+            logger.warning(f"Error checking participants in room {room_name}: {err}")
+        await asyncio.sleep(0.5)
+    logger.warning(f"Timed out waiting for agent to join room {room_name} after {timeout_seconds}s")
+    return False
+
+
 @app.post("/calls", response_model=CallResponse)
 async def create_call(
     request: CallRequest,
@@ -441,6 +467,9 @@ async def create_call(
         raise HTTPException(status_code=502, detail=f"Failed to dispatch LiveKit agent: {err}") from err
 
     update_call_record(call_id, status="dispatched", event_message="LiveKit agent dispatched")
+
+    # Wait for the agent to join the room to prevent race condition when customer answers immediately
+    await _wait_for_agent_to_join(room_name)
 
     try:
         sip_info = await _create_outbound_sip_participant(

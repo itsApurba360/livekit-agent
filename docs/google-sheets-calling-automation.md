@@ -49,13 +49,18 @@ The automation reads rows with `get_all_records()`, so these headers must exist:
 | `Owner name` | Optional `customer_name` for call metadata. |
 | `Company Name` | Optional `company_name` for call metadata. |
 | `Count` | Existing attempt count; incremented after syncing a completed call. |
+| `Workflow Status` | Current workflow state: `Pending AI`, `AI Scheduled`, `Calling`, `Human Help Needed`, `Documents Received`, `Closed`, or `Do Not Call`. |
+| `AI Enabled` | `Yes` allows automation to dial; `No` prevents AI follow-up. |
+| `Assigned To` | Human owner when help is needed. |
+| `Human Status` | Human workflow state such as `Open`, `In Progress`, `Resolved`, or `Closed`. |
+| `Help Needed Notes` | AI-generated free-text summary for human handoff. |
+| `Last Call Outcome` | Latest call outcome/reason from the Call API. |
+| `Next AI Call Date` | Date for the next AI follow-up. |
+| `Next AI Call Time` | Time for the next AI follow-up. |
+| `AI Attempt Count` | AI attempt counter used with `Max AI Attempts`. |
+| `Max AI Attempts` | Maximum AI attempts before the row stops for human review; default `3`. |
 
-The sync step updates Sheet 1 by column position:
-
-- Column 8: `Last Comment`
-- Column 9: `Count`
-
-Keep those columns in that order unless the script is updated.
+The sync step updates Sheet 1 by header name. Keep the header names exact.
 
 ### Sheet 2: call log / next action
 
@@ -69,6 +74,11 @@ The automation appends rows in this exact order:
 6. `Datetime`
 7. `Recording`
 8. `Trasncript`
+9. `Actor`
+10. `Call ID`
+11. `Call Outcome`
+12. `Help Needed Notes`
+13. `Assigned To`
 
 The misspellings `DD/MMYYYY` and `Trasncript` are currently part of the sheet contract because the script reads/writes by those labels/positions.
 
@@ -76,8 +86,10 @@ The misspellings `DD/MMYYYY` and `Trasncript` are currently part of the sheet co
 
 - `AI Call` with due date/time at or before now: the automation calls again.
 - `AI Call` with future date/time: skip until due.
-- `Human`: skip AI dialing; a human callback is expected.
+- `Human`: set Sheet 1 to `Human Help Needed`, disable AI, and expect a human to work the row.
 - anything else: skip.
+
+Sheet 1 also controls future dialing. The automation skips rows when `AI Enabled` is `No`, when `Workflow Status` is `Human Help Needed`, `Documents Received`, `Closed`, or `Do Not Call`, or when `AI Attempt Count` has reached `Max AI Attempts`.
 
 ## Running locally
 
@@ -127,24 +139,25 @@ The loop uses runtime flag/log files in the repo root:
 
 These files are operational artifacts and should not be committed.
 
-## Conversation behavior for GST/document campaigns
+## Conversation behavior for spreadsheet campaigns
 
-When the outbound call purpose contains `gst`, `document`, `filing`, or `pdf`, `agent.py` appends campaign rules to the support-agent prompt:
+When the outbound call was requested by Google Sheets automation (`requested_by=sheets_automation`), `agent.py` appends campaign rules to the support-agent prompt:
 
 - do not collect document details directly;
 - do not ask for OTP/WhatsApp verification;
-- ask when a human executive can call back;
-- if the customer reports blockers or asks for a human, call `schedule_human_callback` immediately;
+- if the customer is not ready and does not need help, schedule a later AI follow-up;
+- if the customer reports blockers or asks for help, call `schedule_human_callback` immediately;
 - after scheduling, thank the customer in simple Hindi/Hinglish and end the call.
 
-`schedule_human_callback(date_str, time_str, client_notes)` writes these fields into the call record metadata:
+`schedule_ai_followup(date_str, time_str, client_notes)` writes an `AI Call` next action. `schedule_human_callback(date_str, time_str, client_notes)` writes these fields into the call record metadata:
 
 ```json
 {
   "next_action": "Human",
   "next_action_date": "30/06/2026",
   "next_action_time": "15:00",
-  "client_comment": "Customer requested a human callback."
+  "client_comment": "Customer requested a human callback.",
+  "help_needed_notes": "Customer requested a human callback."
 }
 ```
 

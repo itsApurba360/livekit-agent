@@ -4,17 +4,19 @@ This file provides guidance to AI coding agents working in this repository.
 
 ## Project Overview
 
-Standalone REST-decoupled LiveKit Voice AI Agent for Frappe/ERPNext. The worker is a pure Python LiveKit service and communicates with remote Frappe/ERPNext only through HTTP REST APIs (no local Frappe imports or bench coupling).
+Standalone LiveKit outbound call-control codebase. The current use of this repository is managing outbound PSTN calls, their status, recordings, dashboard views, and Google Sheets campaign automation.
 
-Current scope is outbound-first:
+Current scope is outbound-call management only:
 
 - **Call API (`call_api.py`)** owns Hermes/external requests, room creation, worker dispatch, outbound SIP dialing, status persistence, dashboard data, recording proxy/lookup, and Google Sheets automation controls.
 - **Worker (`agent.py`)** owns live conversation after the API-created PSTN participant answers.
 - **Google Sheets automation (`sheet_calling_automation.py`)** can run GST/document-collection campaigns by reading pending sheet rows, posting `/calls`, and syncing completed outcomes back to the sheet.
 
-Two personas are still supported by runtime selection:
+Inbound calls and Frappe/ERPNext integration are not the focus right now. Treat inbound paths and Frappe-backed customer lookup/WhatsApp/PDF tools as legacy or optional support surfaces; do not expand or prioritize them unless the user explicitly asks.
 
-- **Support (Kavya)**: For existing customers. Can query orders, invoices, balances, and in GST/document campaigns schedules human callbacks instead of collecting documents directly.
+Two personas remain in config, but new work should only touch them when outbound campaign behavior requires it:
+
+- **Support (Kavya)**: Legacy existing-customer persona. Can query orders, invoices, balances, and in GST/document campaigns schedules human callbacks instead of collecting documents directly.
 - **Sales (Nandini)**: For leads/unknown callers. Qualifies requirements.
 
 ## Development Commands
@@ -24,7 +26,8 @@ Two personas are still supported by runtime selection:
 ```bash
 uv sync
 cp .env.example .env
-# Edit .env with LIVEKIT_*, FRAPPE_*, CALL_API_*, and GOOGLE_API_KEY or OPENAI_API_KEY.
+# Edit .env with LIVEKIT_*, CALL_API_*, and GOOGLE_API_KEY or OPENAI_API_KEY.
+# FRAPPE_* is only needed when explicitly testing legacy Frappe-backed tools.
 ```
 
 For Google Sheets campaign automation also configure:
@@ -103,13 +106,13 @@ Targeted unit tests (no external services required):
 .venv/bin/python -m unittest discover -s tests -p test_sheet_automation.py -v
 ```
 
-Full discovery may include integration-style tests under `tests/` that require a reachable Frappe site (for example `127.0.0.1:8002` in local `.env`). Run it only when those services are available:
+Full discovery may include legacy integration-style tests under `tests/` that require a reachable Frappe site (for example `127.0.0.1:8002` in local `.env`). Run it only when those services are available and the work explicitly touches that integration:
 
 ```bash
 .venv/bin/python -m unittest discover -s tests
 ```
 
-Root-level and Frappe integration tests require valid `.env` values pointing to real services:
+Root-level and Frappe integration tests are outside the normal outbound-call-management loop and require valid `.env` values pointing to real services:
 
 ```bash
 .venv/bin/python -m unittest test_remote_agent.py
@@ -125,8 +128,8 @@ Tests use Python's `unittest` framework despite `pytest` in dev dependencies. Ma
 | File | Role |
 |------|------|
 | `agent.py` | LiveKit conversation worker entrypoint, call context detection, API-dial participant wait path, legacy worker-dial fallback, session setup, dynamic prompt compilation, GST/document campaign rules, silence timeout handling, DTMF listener for OTP |
-| `agent_tools.py` | `CustomerQueryTools` (extends `llm.ToolContext`): all LLM function tools for customer lookups, WhatsApp OTP/PDF/text, `schedule_human_callback`, `end_call` |
-| `frappe_client.py` | `FrappeRestClient`: pure REST client using Token auth. Methods: `lookup_caller`, `get_resource`, `get_resource_list`, `send_whatsapp_message*` |
+| `agent_tools.py` | `CustomerQueryTools` (extends `llm.ToolContext`): legacy customer lookup/WhatsApp OTP/PDF/text tools, plus outbound-relevant `schedule_human_callback` and `end_call` |
+| `frappe_client.py` | Legacy optional `FrappeRestClient`: pure REST client using Token auth. Methods: `lookup_caller`, `get_resource`, `get_resource_list`, `send_whatsapp_message*` |
 | `agent_config.json` | Runtime config: provider/model/voice, agent personas (prompts + direction-specific greetings), noise_cancellation, custom_tts |
 | `web_ui_server.py` | Minimal HTTP server serving static web tester; mints LiveKit tokens and dispatches the agent into test rooms |
 | `call_api.py` | FastAPI call-control service: validates bearer auth, normalizes/limits phone numbers, persists call records, serves dashboard/API data, creates LiveKit rooms, dispatches workers, creates outbound SIP participants, maps dial outcomes, proxies recordings, accepts session reports, and starts/kills sheet automation |
@@ -139,13 +142,13 @@ Tests use Python's `unittest` framework despite `pytest` in dev dependencies. Ma
 
 ### Key Architectural Patterns
 
-**REST Decoupling**: All Frappe interaction goes through `FrappeRestClient`. No `frappe` or `erpnext` Python packages are imported. The client uses standard Token auth (`token {api_key}:{api_secret}`) and calls `/api/resource/...` and whitelisted `/api/method/...` endpoints.
+**Frappe Boundary (legacy/optional)**: Frappe-backed customer lookup, WhatsApp, and PDF helpers are not current focus areas. If explicitly touched, keep all Frappe interaction behind `FrappeRestClient`; do not add local `frappe` or `erpnext` imports or bench coupling.
 
-**Call Context and Direction**: `CallContext` is built from metadata/room metadata first, SIP participant attributes second, and room name patterns third (`agent_call_*` → outbound; phone prefix in room name → inbound). Direction determines greeting selection and behavioral rules injected into the system prompt.
+**Call Context and Direction**: Outbound metadata is the source of truth for current work. `CallContext` still has legacy inbound detection through SIP participant attributes and room name patterns, but new work should target outbound `agent_call_*` flows unless explicitly requested otherwise.
 
 **Dynamic Prompt Compilation**: Support prompts include `{verification_rules}`. At runtime, `get_compiled_prompt(is_verified=...)` injects unverified/verified WhatsApp delivery rules. For outbound purposes containing `gst`, `document`, `filing`, or `pdf`, `agent.py` appends GST/document campaign rules that route the conversation toward a human callback instead of OTP/document collection.
 
-**Verification Flow for WhatsApp Delivery**:
+**Legacy Verification Flow for WhatsApp Delivery**:
 
 - Voice queries (orders, balances, details) work without verification.
 - WhatsApp delivery (`send_text_whatsapp`, `send_pdf_whatsapp`) requires `send_verification_otp` + `verify_otp` (spoken or DTMF via `sip_dtmf_received`).
@@ -174,7 +177,7 @@ Tests use Python's `unittest` framework despite `pytest` in dev dependencies. Ma
 2. `call_api.py` authenticates `CALL_API_TOKEN`, validates allowed country prefixes, creates the PostgreSQL call record, creates a LiveKit room, and dispatches the worker selected by `LIVEKIT_AGENT_NAME`.
 3. `call_api.py` creates the outbound SIP participant using `OUTBOUND_TRUNK_ID` (`ST_...`) with `wait_until_answered=True`.
 4. `call_api.py` records and returns the exact setup result (`answered` or a structured `failed_*` status with raw SIP code/text when available).
-5. `agent.py` receives `outbound_dial_mode="api"`, resolves outbound call context, optionally looks up the phone in Frappe, waits for the API-created SIP participant to become active, and starts the realtime conversation worker linked to that participant.
+5. `agent.py` receives `outbound_dial_mode="api"`, resolves outbound call context, optionally uses legacy Frappe lookup when configured, waits for the API-created SIP participant to become active, and starts the realtime conversation worker linked to that participant.
 6. After the callee answers and speaks first, the realtime agent responds. Hermes can call `get_phone_call_status(call_id)` or the operator can inspect `/dashboard`.
 7. On disconnect, the worker posts a LiveKit session report; the API stores transcript fields and refreshes Vobiz recording metadata.
 
@@ -193,7 +196,7 @@ Tests use Python's `unittest` framework despite `pytest` in dev dependencies. Ma
 
 - LiveKit: `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`
 - Worker selection: `LIVEKIT_AGENT_NAME` (recommended values: `outbound-caller-local`, `outbound-caller-dokploy`, `outbound-caller-prod`), optional `LIVEKIT_AGENT_HTTP_PORT`
-- Frappe: `FRAPPE_SITE_URL`, `FRAPPE_API_KEY`, `FRAPPE_API_SECRET`
+- Legacy Frappe tools, only when explicitly needed: `FRAPPE_SITE_URL`, `FRAPPE_API_KEY`, `FRAPPE_API_SECRET`
 - AI: `GOOGLE_API_KEY` or `OPENAI_API_KEY`
 - Telephony: `OUTBOUND_TRUNK_ID`, `VOBIZ_SIP_DOMAIN`, `DEFAULT_TRANSFER_NUMBER`
 - Recording lookup: `VOBIZ_API_BASE_URL`, `VOBIZ_AUTH_ID`, `VOBIZ_AUTH_TOKEN`, optional recording format/channel settings
@@ -215,8 +218,8 @@ Tests use Python's `unittest` framework despite `pytest` in dev dependencies. Ma
 - Greeting selection uses `_select_initial_greeting_template` and prefers direction-specific keys.
 - For outbound, the first LLM response is not auto-generated; the agent waits for callee speech.
 - `AgentSession` is configured with a short `user_away_timeout`; there is also explicit inactivity monitoring that shuts down after silence.
-- DTMF handling for OTP bypasses the normal LLM path and directly feeds the 4-digit buffer.
-- PDF sending resolves a print format (prefers "Sales Order with payment details" when a Payment Entry exists) and constructs a Frappe download URL.
+- DTMF handling for OTP belongs to the legacy WhatsApp verification path and bypasses the normal LLM flow.
+- PDF sending is part of the legacy Frappe tool surface; only change it when explicitly working on that integration.
 - All tool responses are natural-language strings intended for voice; raw JSON/IDs are summarized.
 - For local call-control testing, run both the worker and API with the same `.env` and `LIVEKIT_AGENT_NAME=outbound-caller-local`.
 - With API-owned dialing, `POST /calls` intentionally blocks until answer/failure and returns the immediate SIP setup outcome. Keep client timeouts long enough for ringing/no-answer.
@@ -227,7 +230,7 @@ Tests use Python's `unittest` framework despite `pytest` in dev dependencies. Ma
 - Runtime files `agent_running.flag`, `agent_stop.flag`, and `agent_error.log` are operational artifacts. They should be ignored and not committed.
 - To stop local services, terminate terminals or run `pkill -f "uvicorn call_api:app"`. To stop only the sheet automation loop/active dashboard calls, use `POST /agent/kill` from the dashboard/API.
 - SIP failure `object cannot be found` usually means `OUTBOUND_TRUNK_ID` is wrong. SIP `486 Busy Here` maps to `failed_busy`; `480 Temporarily Unavailable` maps best-effort to `failed_unreachable`; `408 Request Timeout` maps to `failed_no_answer`.
-- Frappe lookup failures (for example local `127.0.0.1:8002` refused) fall back to an unknown lead and do not by themselves block outbound dialing.
+- Frappe lookup failures (for example local `127.0.0.1:8002` refused) fall back to an unknown lead and must not block outbound dialing.
 
 The worker is deployed to LiveKit Cloud (which runs the Dockerfile with `uv run agent.py start` under the hood) using:
 

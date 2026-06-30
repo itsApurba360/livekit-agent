@@ -1317,6 +1317,23 @@ wheels = [
 ]
 
 [[package]]
+name = "livekit-plugins-ai-coustics"
+version = "0.3.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "livekit" },
+    { name = "livekit-agents" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/1a/80/feed50c8495f2293db95a35d72aacef4ce1f2cd21113e093ac910ffa4395/livekit_plugins_ai_coustics-0.3.0.tar.gz", hash = "sha256:7019c9035aad8e015f58da6818381bbbc5f2c083ce44ab0303aee4911a866a82", size = 19089 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/96/41/651d29485a2ba9e844b55d48959d97e309214942038c2042bcfa700e538d/livekit_plugins_ai_coustics-0.3.0-cp310-abi3-macosx_10_9_x86_64.whl", hash = "sha256:4ac73a46722b59232bbb1d1db86d342bfa77fc74395d5b01d665d2aa6bb4980e", size = 70523160 },
+    { url = "https://files.pythonhosted.org/packages/4a/cd/ddd92898aa0f269b21b0aaf18f77ece9d8a8b00bcb2af47fd44eedf690bf/livekit_plugins_ai_coustics-0.3.0-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:4e50f2d03734d500cfe41a9fa11b74a94a5894b6869c41a7cef679c5b4b24efa", size = 70699868 },
+    { url = "https://files.pythonhosted.org/packages/43/15/eb48d2e662a08667f4526d3181097f900b9088e78028d9742114d8b4d729/livekit_plugins_ai_coustics-0.3.0-cp310-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:0d78a4e48d80c09b0a9e192115f850891813589cde8090d36b745bd4e3312bf3", size = 70398515 },
+    { url = "https://files.pythonhosted.org/packages/ed/c0/9ddfd240baccca55021a0cb2622968ae0b7041a570aed1b4ce792a6b0f29/livekit_plugins_ai_coustics-0.3.0-cp310-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:4e70be41a4988d9344516fb5f3f64d9cab369a93bd94135226f0c903863da150", size = 70742569 },
+    { url = "https://files.pythonhosted.org/packages/13/da/12b27e79ac14f29e4f732b7c3a665604bf0e34830802d9658fa679ca04a5/livekit_plugins_ai_coustics-0.3.0-cp310-abi3-win_amd64.whl", hash = "sha256:3940b252fb8a278ea7455144629cbb8283f8927b99125327492efe6cde74c8fd", size = 70087927 },
+]
+
+[[package]]
 name = "livekit-plugins-google"
 version = "1.6.4"
 source = { registry = "https://pypi.org/simple" }
@@ -1330,21 +1347,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/4f/4b/43d80c191f9cf7753cd541b1c8aa6c03e77b8fc18f6309da3d1c29751df8/livekit_plugins_google-1.6.4.tar.gz", hash = "sha256:79a32de8d1141ee0e4a62e955db09061ebce7a4b96df98fe1ae1b0a707e1ad24", size = 46664 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/97/58/cd24b56cbdf38f0721a8a95fdfc58efdcd94e0546f9cf0f12bea6cabfcba/livekit_plugins_google-1.6.4-py3-none-any.whl", hash = "sha256:b173874c858c8afe19908f3e26fc8bcf44727ba452e49c9420725f5765a66d3d", size = 54353 },
-]
-
-[[package]]
-name = "livekit-plugins-noise-cancellation"
-version = "0.2.5"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "livekit" },
-]
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/36/2a/2782bc35b0fee188d362a4628f1c0595a61fe76d56c527bc5de4df8fddfc/livekit_plugins_noise_cancellation-0.2.5-py3-none-macosx_10_9_x86_64.whl", hash = "sha256:b327424a70a4d4f2ce9a52144fa62f68372b644951a738b12c104cb4f2a15b6b", size = 66066815 },
-    { url = "https://files.pythonhosted.org/packages/1b/75/3758aeba5964b826482786c044866e353823d6d5ff1736106584ae7d3b06/livekit_plugins_noise_cancellation-0.2.5-py3-none-macosx_11_0_arm64.whl", hash = "sha256:584211137dc732ac882fb11a40c35888250c74a8806e46a21ce1fd57a05c1c1e", size = 64608005 },
-    { url = "https://files.pythonhosted.org/packages/90/2e/cf86f21b338c6571b95e18bd9d96b33d64bf2fb1123f796cc7033bda821d/livekit_plugins_noise_cancellation-0.2.5-py3-none-manylinux_2_28_aarch64.whl", hash = "sha256:47050db446693e1a260339f5c45b025cd2b6030516a80e976d90ebaa4eef687c", size = 70218295 },
-    { url = "https://files.pythonhosted.org/packages/c7/b8/2f7a56b1c15220988fb4ac3e73483cf611a7547ab16b867b25d373eddbc7/livekit_plugins_noise_cancellation-0.2.5-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:535e510d92e0a36e33f60c2ddd4de0da3cbfd21fe02d767f5839b421b5bea9fb", size = 73324763 },
-    { url = "https://files.pythonhosted.org/packages/9f/4d/37be8da861607f392d07bb0f1c6b57c635db249095084abcbfaaaab6d7b5/livekit_plugins_noise_cancellation-0.2.5-py3-none-win_amd64.whl", hash = "sha256:5879d28120a6b47a7d557832d9432683710987f79e9b514171898be36534380b", size = 65757107 },
 ]
 
 [[package]]
@@ -1401,8 +1403,8 @@ dependencies = [
     { name = "gspread" },
     { name = "livekit" },
     { name = "livekit-agents" },
+    { name = "livekit-plugins-ai-coustics" },
     { name = "livekit-plugins-google" },
-    { name = "livekit-plugins-noise-cancellation" },
     { name = "livekit-plugins-openai" },
     { name = "livekit-plugins-silero" },
     { name = "psycopg", extra = ["binary"] },
@@ -1425,8 +1427,8 @@ requires-dist = [
     { name = "gspread" },
     { name = "livekit" },
     { name = "livekit-agents" },
+    { name = "livekit-plugins-ai-coustics" },
     { name = "livekit-plugins-google" },
-    { name = "livekit-plugins-noise-cancellation" },
     { name = "livekit-plugins-openai" },
     { name = "livekit-plugins-silero" },
     { name = "psycopg", extras = ["binary"] },

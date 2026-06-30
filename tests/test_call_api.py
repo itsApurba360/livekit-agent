@@ -153,6 +153,9 @@ class CallApiTestCase(unittest.TestCase):
         import call_api
 
         self.call_api = call_api
+        async def fake_wait_for_agent_to_join(room_name, timeout_seconds=10.0):
+            return True
+
         self.store = InMemoryCallStore(call_api.now_iso)
         self.store_patchers = [
             patch.object(call_api, "create_call_record", self.store.create_call_record),
@@ -161,6 +164,7 @@ class CallApiTestCase(unittest.TestCase):
             patch.object(call_api, "get_call_record_by_vobiz_call_uuid", self.store.get_call_record_by_vobiz_call_uuid),
             patch.object(call_api, "list_call_records", self.store.list_call_records),
             patch.object(call_api, "list_active_call_records", self.store.list_active_call_records),
+            patch.object(call_api, "_wait_for_agent_to_join", fake_wait_for_agent_to_join),
         ]
         for patcher in self.store_patchers:
             patcher.start()

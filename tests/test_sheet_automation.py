@@ -5,7 +5,7 @@ from datetime import datetime
 from gspread.utils import a1_to_rowcol
 
 # Import components to test
-from agent_tools import CustomerQueryTools
+from agent_tools import CustomerQueryTools, _wait_for_end_call_speech
 from sheet_calling_automation import parse_schedule, sync_completed_calls_to_sheets
 from agent import CallContext, _call_context_prompt
 
@@ -45,6 +45,27 @@ class FakeSpreadsheet:
     def get_worksheet(self, index):
         return self.sheets[index]
 
+
+class FakeAgentSession:
+    def __init__(self):
+        self.agent_state = "listening"
+        self.handlers = []
+
+    def on(self, event, callback):
+        if event == "agent_state_changed":
+            self.handlers.append(callback)
+
+    def off(self, event, callback):
+        if event == "agent_state_changed":
+            self.handlers.remove(callback)
+
+    def set_agent_state(self, state):
+        self.agent_state = state
+        ev = type("Event", (), {"new_state": state})()
+        for callback in list(self.handlers):
+            callback(ev)
+
+
 class TestSheetAutomation(unittest.TestCase):
     def test_customer_query_tools_exposes_only_outbound_campaign_tools(self):
         tools = CustomerQueryTools(client=MagicMock())
@@ -52,6 +73,25 @@ class TestSheetAutomation(unittest.TestCase):
         exposed_tools = set(tools.function_tools)
         if exposed_tools:
             self.assertEqual(exposed_tools, CustomerQueryTools.ACTIVE_TOOL_NAMES)
+
+    def test_end_call_waits_until_goodbye_speech_finishes(self):
+        async def run():
+            import asyncio
+
+            session = FakeAgentSession()
+            task = asyncio.create_task(_wait_for_end_call_speech(session))
+            await asyncio.sleep(0)
+            self.assertFalse(task.done())
+
+            session.set_agent_state("speaking")
+            await asyncio.sleep(0)
+            self.assertFalse(task.done())
+
+            session.set_agent_state("listening")
+            await asyncio.wait_for(task, 0.1)
+            self.assertEqual(session.handlers, [])
+
+        asyncio_run(run())
 
     def test_parse_schedule(self):
         # Test standard parsing

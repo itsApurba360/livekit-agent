@@ -7,6 +7,44 @@ from frappe_client import FrappeRestClient
 from call_status_store import update_call_record, get_call_record
 
 logger = logging.getLogger("agent-tools")
+END_CALL_SPEECH_START_TIMEOUT_SECONDS = 3.0
+END_CALL_MAX_SPEECH_SECONDS = 8.0
+
+
+async def _wait_for_end_call_speech(session: Optional[Any]) -> None:
+    if not session or not hasattr(session, "on") or not hasattr(session, "off"):
+        await asyncio.sleep(END_CALL_SPEECH_START_TIMEOUT_SECONDS)
+        return
+
+    started = asyncio.Event()
+    finished = asyncio.Event()
+
+    def on_agent_state_changed(ev):
+        state = getattr(ev, "new_state", None)
+        if state == "speaking":
+            started.set()
+        elif started.is_set():
+            finished.set()
+
+    session.on("agent_state_changed", on_agent_state_changed)
+    if getattr(session, "agent_state", None) == "speaking":
+        started.set()
+
+    try:
+        try:
+            await asyncio.wait_for(started.wait(), END_CALL_SPEECH_START_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            return
+
+        if getattr(session, "agent_state", None) != "speaking":
+            return
+
+        try:
+            await asyncio.wait_for(finished.wait(), END_CALL_MAX_SPEECH_SECONDS)
+        except asyncio.TimeoutError:
+            pass
+    finally:
+        session.off("agent_state_changed", on_agent_state_changed)
 
 class CustomerQueryTools(llm.ToolContext):
     """
@@ -465,9 +503,8 @@ class CustomerQueryTools(llm.ToolContext):
         ctx = getattr(self, "ctx", None)
         session = getattr(self, "session", None)
         if ctx:
-            import asyncio
             async def perform_shutdown():
-                await asyncio.sleep(1.0)  # Wait 1 second for the final speech to play
+                await _wait_for_end_call_speech(session)
                 try:
                     logger.info("Custom end_call: Deleting room and shutting down job...")
                     await ctx.delete_room()
@@ -478,9 +515,8 @@ class CustomerQueryTools(llm.ToolContext):
             asyncio.create_task(perform_shutdown())
             return "Call is ending. Politely say goodbye to the user now in simple Hindi/Hinglish."
         elif session:
-            import asyncio
             async def perform_session_shutdown():
-                await asyncio.sleep(1.0)
+                await _wait_for_end_call_speech(session)
                 try:
                     logger.info("Custom end_call: Shutting down agent session...")
                     session.shutdown()

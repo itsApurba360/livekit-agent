@@ -46,7 +46,13 @@ class FakeSpreadsheet:
         return self.sheets[index]
 
 class TestSheetAutomation(unittest.TestCase):
-    
+    def test_customer_query_tools_exposes_only_outbound_campaign_tools(self):
+        tools = CustomerQueryTools(client=MagicMock())
+
+        exposed_tools = set(tools.function_tools)
+        if exposed_tools:
+            self.assertEqual(exposed_tools, CustomerQueryTools.ACTIVE_TOOL_NAMES)
+
     def test_parse_schedule(self):
         # Test standard parsing
         dt = parse_schedule("23/06/2026", "14:30")

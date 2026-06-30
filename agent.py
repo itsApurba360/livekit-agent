@@ -43,16 +43,11 @@ DEFAULT_TRANSFER_NUMBER = os.environ.get("DEFAULT_TRANSFER_NUMBER")
 SIP_DOMAIN = os.environ.get("VOBIZ_SIP_DOMAIN")
 AGENT_NAME = os.environ.get("LIVEKIT_AGENT_NAME") or os.environ.get("AGENT_NAME") or "outbound-caller"
 
-DEFAULT_SUPPORT_UNVERIFIED_RULES = """- The current call is linked to a registered customer number. You may answer questions about sales orders, invoice status, outstanding amounts, and customer info directly using your tools (get_customer_sales_orders, get_customer_pending_amount, get_customer_details, get_sales_order_details, get_sales_invoice_details) without any WhatsApp verification.
-- Do NOT ask for verification at the start of the call or for voice-only queries.
-- WhatsApp verification is ONLY required when the customer asks to receive information via WhatsApp (text details such as order ID, balance, customer name, or a PDF copy of a Sales Order or Sales Invoice).
-- When the customer asks for WhatsApp delivery, you MUST call `send_verification_otp` immediately. Do not ask for permission first.
-- When they speak the code, call `verify_otp` to check if it matches. Only after successful verification, call `send_text_whatsapp` for text details or `send_pdf_whatsapp` for PDF documents.
-- If the customer is not registered on WhatsApp (indicated by the `send_verification_otp` tool), ask them to provide a valid WhatsApp number."""
+DEFAULT_SUPPORT_UNVERIFIED_RULES = """- Customer lookup, WhatsApp, PDF, and OTP verification tools are disabled for now.
+- Do not ask for OTP or WhatsApp verification.
+- Use only outbound campaign scheduling tools and `end_call`."""
 
-DEFAULT_SUPPORT_VERIFIED_RULES = """- The customer is verified for WhatsApp delivery. You may call `send_text_whatsapp` to send requested details as a text message, or `send_pdf_whatsapp` to send a Sales Order or Sales Invoice PDF.
-- Do NOT repeat or mention verification, OTP, or verification status in subsequent turns. Continue helping with their request.
-- You may still use all customer query tools freely for voice answers."""
+DEFAULT_SUPPORT_VERIFIED_RULES = DEFAULT_SUPPORT_UNVERIFIED_RULES
 
 
 CallContext = call_context_helpers.CallContext
@@ -366,9 +361,9 @@ async def entrypoint(ctx: agents.JobContext):
             prompt_base += f"\n\nSecurity Rules:\n{rules_addon}"
 
         if customer_id:
-            prompt_base += f"\n\nThe current call is linked to Customer ID: '{customer_id}'. You can use tools (get_customer_sales_orders, get_sales_order_details, get_customer_pending_amount, get_sales_invoice_details, get_customer_details, send_text_whatsapp, send_pdf_whatsapp) to query their details. When explaining details, summarize in natural, polite Hindi/Hinglish. Do not read raw codes verbatim."
+            prompt_base += f"\n\nThe current outbound campaign row is linked to Customer ID: '{customer_id}'. Customer lookup and WhatsApp/PDF tools are disabled for now; use only scheduling or end-call tools."
         else:
-            prompt_base += "\n\nNo Customer is currently linked to this call. You can use the search_customer tool to find a customer by name or phone number."
+            prompt_base += "\n\nNo Customer is currently linked to this outbound call. Customer lookup tools are disabled for now; continue with the call purpose and use only scheduling or end-call tools."
 
         is_sheet_campaign = call_context.requested_by == "sheets_automation"
         if is_sheet_campaign:

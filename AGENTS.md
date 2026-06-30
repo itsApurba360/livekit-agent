@@ -97,7 +97,6 @@ The web UI connects to the LiveKit Cloud project where the hosted agent worker h
 Targeted unit tests (no external services required):
 
 ```bash
-.venv/bin/python -m unittest discover -s tests -p test_agent_tools.py -v
 .venv/bin/python -m unittest discover -s tests -p test_agent_call_context.py -v
 .venv/bin/python -m unittest discover -s tests -p test_web_ui.py -v
 .venv/bin/python -m unittest discover -s tests -p test_call_outcomes.py -v
@@ -106,17 +105,10 @@ Targeted unit tests (no external services required):
 .venv/bin/python -m unittest discover -s tests -p test_sheet_automation.py -v
 ```
 
-Full discovery may include legacy integration-style tests under `tests/` that require a reachable Frappe site (for example `127.0.0.1:8002` in local `.env`). Run it only when those services are available and the work explicitly touches that integration:
+Full discovery should stay focused on outbound call management:
 
 ```bash
 .venv/bin/python -m unittest discover -s tests
-```
-
-Root-level and Frappe integration tests are outside the normal outbound-call-management loop and require valid `.env` values pointing to real services:
-
-```bash
-.venv/bin/python -m unittest test_remote_agent.py
-.venv/bin/python -m unittest discover -s tests -p test_frappe_connection.py -v
 ```
 
 Tests use Python's `unittest` framework despite `pytest` in dev dependencies. Many tests heavily stub LiveKit modules.
@@ -128,7 +120,7 @@ Tests use Python's `unittest` framework despite `pytest` in dev dependencies. Ma
 | File | Role |
 |------|------|
 | `agent.py` | LiveKit conversation worker entrypoint, call context detection, API-dial participant wait path, legacy worker-dial fallback, session setup, dynamic prompt compilation, GST/document campaign rules, silence timeout handling, DTMF listener for OTP |
-| `agent_tools.py` | `CustomerQueryTools` (extends `llm.ToolContext`): legacy customer lookup/WhatsApp OTP/PDF/text tools, plus outbound-relevant `schedule_human_callback` and `end_call` |
+| `agent_tools.py` | `CustomerQueryTools` (extends `llm.ToolContext`): currently exposes only outbound campaign tools (`schedule_human_callback`, `schedule_ai_followup`, `end_call`); legacy customer lookup/WhatsApp/PDF methods remain disabled from model use |
 | `frappe_client.py` | Legacy optional `FrappeRestClient`: pure REST client using Token auth. Methods: `lookup_caller`, `get_resource`, `get_resource_list`, `send_whatsapp_message*` |
 | `agent_config.json` | Runtime config: provider/model/voice, agent personas (prompts + direction-specific greetings), noise_cancellation, custom_tts |
 | `web_ui_server.py` | Minimal HTTP server serving static web tester; mints LiveKit tokens and dispatches the agent into test rooms |
@@ -146,14 +138,7 @@ Tests use Python's `unittest` framework despite `pytest` in dev dependencies. Ma
 
 **Call Context and Direction**: Outbound metadata is the source of truth for current work. `CallContext` still has legacy inbound detection through SIP participant attributes and room name patterns, but new work should target outbound `agent_call_*` flows unless explicitly requested otherwise.
 
-**Dynamic Prompt Compilation**: Support prompts include `{verification_rules}`. At runtime, `get_compiled_prompt(is_verified=...)` injects unverified/verified WhatsApp delivery rules. For outbound purposes containing `gst`, `document`, `filing`, or `pdf`, `agent.py` appends GST/document campaign rules that route the conversation toward a human callback instead of OTP/document collection.
-
-**Legacy Verification Flow for WhatsApp Delivery**:
-
-- Voice queries (orders, balances, details) work without verification.
-- WhatsApp delivery (`send_text_whatsapp`, `send_pdf_whatsapp`) requires `send_verification_otp` + `verify_otp` (spoken or DTMF via `sip_dtmf_received`).
-- GST/document collection campaigns explicitly tell the agent not to ask for OTP/WhatsApp verification.
-- On verification success, the live prompt is updated and a one-time system note can trigger confirmation.
+**Outbound Campaign Prompting**: For outbound purposes containing `gst`, `document`, `filing`, or `pdf`, `agent.py` appends GST/document campaign rules that route the conversation toward a human callback instead of OTP/document collection.
 
 **Outbound SIP Dialing and Status Tracking**: API-owned dialing is the default. `call_api.py` creates the LiveKit room, dispatches the selected worker, creates the SIP participant with `wait_until_answered=True`, maps exact SIP outcomes via `call_outcomes.py`, stores status in PostgreSQL, and returns the immediate setup result. The worker receives `outbound_dial_mode="api"`, waits for the API-created SIP participant to become active, starts the `AgentSession` linked to that participant, and does not place a second SIP call. `_ensure_outbound_participant` remains as a legacy/manual fallback for worker-owned dialing.
 
@@ -169,7 +154,7 @@ Tests use Python's `unittest` framework despite `pytest` in dev dependencies. Ma
 
 **Provider Flexibility**: Supports `Google` (Gemini realtime) and `OpenAI` (realtime). OpenAI can optionally use `google.beta.GeminiTTS` while keeping OpenAI for the LLM. Provider/model/voice are read from `agent_config.json` at startup.
 
-**Tool Context Lifecycle**: `CustomerQueryTools` holds references to `client`, `session`, `ctx`, and optional `call_id`. Tools are async and use `asyncio.to_thread` for blocking REST calls. `end_call` triggers delayed room/session shutdown. `schedule_human_callback` updates the persisted call metadata when a call ID is present.
+**Tool Context Lifecycle**: `CustomerQueryTools` holds references to `client`, `session`, `ctx`, and optional `call_id`. The model currently receives only `schedule_human_callback`, `schedule_ai_followup`, and `end_call`. `end_call` triggers delayed room/session shutdown; scheduling tools update persisted call metadata when a call ID is present.
 
 ### Data Flow (Hermes-Initiated Outbound Example)
 
@@ -211,15 +196,14 @@ Tests use Python's `unittest` framework despite `pytest` in dev dependencies. Ma
 - `agent_type`, `provider`, `model`, `voice`
 - `noise_cancellation`, `custom_tts`
 - `support_agent` / `sales_agent`: `name`, direction-specific greetings, `system_prompt`
-- System prompts use `{lead_name}`, `{company_name}`, `{verification_rules}` placeholders
+- System prompts use `{lead_name}` and `{company_name}` placeholders; `{verification_rules}` is legacy WhatsApp/Frappe prompt support.
 
 ## Important Implementation Notes
 
 - Greeting selection uses `_select_initial_greeting_template` and prefers direction-specific keys.
 - For outbound, the first LLM response is not auto-generated; the agent waits for callee speech.
 - `AgentSession` is configured with a short `user_away_timeout`; there is also explicit inactivity monitoring that shuts down after silence.
-- DTMF handling for OTP belongs to the legacy WhatsApp verification path and bypasses the normal LLM flow.
-- PDF sending is part of the legacy Frappe tool surface; only change it when explicitly working on that integration.
+- DTMF/OTP, WhatsApp, PDF, and customer-query tools are legacy Frappe surfaces and are not exposed to the model right now.
 - All tool responses are natural-language strings intended for voice; raw JSON/IDs are summarized.
 - For local call-control testing, run both the worker and API with the same `.env` and `LIVEKIT_AGENT_NAME=outbound-caller-local`.
 - With API-owned dialing, `POST /calls` intentionally blocks until answer/failure and returns the immediate SIP setup outcome. Keep client timeouts long enough for ringing/no-answer.

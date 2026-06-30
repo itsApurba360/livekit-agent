@@ -10,11 +10,21 @@ logger = logging.getLogger("agent-tools")
 
 class CustomerQueryTools(llm.ToolContext):
     """
-    A standalone LLM ToolContext that implements all customer information lookup
-    and WhatsApp OTP/PDF sending logic using a remote Frappe REST client instead of local ORM imports.
+    LLM ToolContext for outbound campaign actions.
+
+    Legacy Frappe/WhatsApp methods remain callable in Python but are not exposed
+    to the model while outbound-call management is the active scope.
     """
+    ACTIVE_TOOL_NAMES = {"schedule_human_callback", "schedule_ai_followup", "end_call"}
+
     def __init__(self, client: FrappeRestClient, customer_id: Optional[str] = None, phone_number: Optional[str] = None, on_verify_success: Optional[Callable] = None, session: Optional[Any] = None, ctx: Optional[Any] = None, call_id: Optional[str] = None):
         super().__init__(tools=[])
+        tool_map = getattr(self, "_fnc_tools_map", None)
+        if tool_map is None:
+            tool_map = getattr(self, "function_tools", None)
+        for tool_name in list(tool_map or {}):
+            if tool_name not in self.ACTIVE_TOOL_NAMES:
+                tool_map.pop(tool_name, None)
         self.client = client
         self.customer_id = customer_id
         self.phone_number = phone_number

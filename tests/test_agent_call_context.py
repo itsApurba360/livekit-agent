@@ -179,28 +179,6 @@ class FakeContext:
 
 
 class AgentCallContextTestCase(unittest.IsolatedAsyncioTestCase):
-    def test_builds_inbound_context_from_sip_attributes(self):
-        participant = FakeParticipant(
-            identity="caller-1",
-            attributes={
-                "sip.phoneNumber": "+919876543210",
-                "sip.callStatus": "active",
-                "sip.ruleID": "SDR_123",
-                "sip.callIDFull": "carrier-call-id",
-                "sip.trunkID": "ST_INBOUND",
-            },
-        )
-        ctx = FakeContext(FakeRoom(participants=[participant]))
-
-        call_context = agent._build_call_context(ctx, {})
-
-        self.assertEqual(call_context.direction, "inbound")
-        self.assertEqual(call_context.phone_number, "+919876543210")
-        self.assertEqual(call_context.participant_identity, "caller-1")
-        self.assertEqual(call_context.sip_call_status, "active")
-        self.assertEqual(call_context.sip_call_id, "carrier-call-id")
-        self.assertEqual(call_context.sip_rule_id, "SDR_123")
-
     def test_builds_outbound_context_from_agent_call_room(self):
         ctx = FakeContext(FakeRoom(name="agent_call_abc123"), metadata='{"phone_number": "+919876543210"}')
         config = agent._load_json_dict(ctx.job.metadata)
@@ -252,33 +230,13 @@ class AgentCallContextTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Requested by: hermes", prompt)
         self.assertIn("Use the call purpose", prompt)
 
-    def test_inbound_prompt_prevents_outbound_call_framing(self):
-        call_context = agent.CallContext(direction="inbound", phone_number="+919876543210")
-
-        prompt = agent._call_context_prompt(call_context)
-
-        self.assertIn("Direction: inbound", prompt)
-        self.assertIn("Caller phone number", prompt)
-        self.assertIn("user called LSA Office", prompt)
-        self.assertIn("Do not say that you called them", prompt)
-        self.assertNotIn("Callee phone number", prompt)
-
-    def test_selects_direction_specific_greetings(self):
+    def test_selects_outbound_and_web_greetings(self):
         agent_settings = {
             "initial_greeting": "legacy greeting",
-            "inbound_initial_greeting": "inbound greeting",
             "outbound_initial_greeting": "outbound greeting",
             "web_initial_greeting": "web greeting",
         }
 
-        self.assertEqual(
-            agent._select_initial_greeting_template(
-                agent_settings,
-                agent.CallContext(direction="inbound"),
-                "fallback greeting",
-            ),
-            "inbound greeting",
-        )
         self.assertEqual(
             agent._select_initial_greeting_template(
                 agent_settings,
@@ -296,30 +254,11 @@ class AgentCallContextTestCase(unittest.IsolatedAsyncioTestCase):
             "web greeting",
         )
 
-    def test_agent_configs_have_direction_specific_greetings(self):
+    def test_agent_configs_have_outbound_greetings(self):
         for agent_key in ("support_agent", "sales_agent"):
             with self.subTest(agent_key=agent_key):
                 agent_settings = agent.agent_config[agent_key]
-                self.assertIn("inbound_initial_greeting", agent_settings)
                 self.assertIn("outbound_initial_greeting", agent_settings)
-
-    def test_sales_inbound_greeting_does_not_assume_we_called(self):
-        sales_settings = agent.agent_config["sales_agent"]
-
-        inbound_greeting = agent._select_initial_greeting_template(
-            sales_settings,
-            agent.CallContext(direction="inbound"),
-            "fallback greeting",
-        )
-        outbound_greeting = agent._select_initial_greeting_template(
-            sales_settings,
-            agent.CallContext(direction="outbound"),
-            "fallback greeting",
-        )
-
-        self.assertNotIn("Aapne hamare services ke liye enquiry", inbound_greeting)
-        self.assertNotIn("requirement samajhni thi", inbound_greeting)
-        self.assertIn("Aapne hamare services ke liye enquiry", outbound_greeting)
 
     def test_outbound_trunk_uses_documented_env_name(self):
         with patch.dict(agent.os.environ, {"OUTBOUND_TRUNK_ID": "ST_ENV"}, clear=False):

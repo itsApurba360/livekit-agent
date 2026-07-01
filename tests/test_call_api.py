@@ -124,7 +124,7 @@ class InMemoryCallStore:
         return result
 
     def list_active_call_records(self):
-        active = {"dispatching", "dispatched", "dialing", "answered", "active"}
+        active = {"dispatching", "dispatched", "agent_ready", "dialing", "answered", "active"}
         return [
             self._copy(record)
             for record in self.records.values()
@@ -156,6 +156,9 @@ class CallApiTestCase(unittest.TestCase):
         async def fake_wait_for_agent_to_join(room_name, timeout_seconds=10.0):
             return True
 
+        async def fake_wait_for_agent_ready(call_id, timeout_seconds=30.0):
+            return True
+
         self.store = InMemoryCallStore(call_api.now_iso)
         self.store_patchers = [
             patch.object(call_api, "create_call_record", self.store.create_call_record),
@@ -165,6 +168,7 @@ class CallApiTestCase(unittest.TestCase):
             patch.object(call_api, "list_call_records", self.store.list_call_records),
             patch.object(call_api, "list_active_call_records", self.store.list_active_call_records),
             patch.object(call_api, "_wait_for_agent_to_join", fake_wait_for_agent_to_join),
+            patch.object(call_api, "_wait_for_agent_ready", fake_wait_for_agent_ready),
         ]
         for patcher in self.store_patchers:
             patcher.start()
@@ -343,6 +347,35 @@ class CallApiTestCase(unittest.TestCase):
         self.assertEqual(dashboard_body["summary"]["status_counts"]["answered"], 1)
         self.assertEqual(dashboard_body["calls"][0]["call_id"], body["call_id"])
         self.assertEqual(dashboard_body["calls"][0]["event_count"], len(status_body["events"]))
+
+    def test_call_endpoint_does_not_dial_until_agent_ready(self):
+        captured = {}
+
+        async def fake_dispatch(room_name, metadata):
+            return object()
+
+        async def fake_agent_ready(call_id, timeout_seconds=30.0):
+            return False
+
+        async def fake_sip_dial(**kwargs):
+            captured["sip_dial"] = kwargs
+            return types.SimpleNamespace(sip_call_id="sip-call-123")
+
+        with patch("call_api._create_room_and_dispatch_agent", new=fake_dispatch), \
+             patch("call_api._wait_for_agent_ready", new=fake_agent_ready), \
+             patch("call_api._create_outbound_sip_participant", new=fake_sip_dial):
+            response = self.client.post(
+                "/calls",
+                headers={"Authorization": "Bearer test-token"},
+                json={"phone_number": "9876543210", "purpose": "Follow up"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertFalse(body["ok"])
+        self.assertEqual(body["status"], "dispatch_failed")
+        self.assertEqual(body["reason"], "agent_ready_timeout")
+        self.assertNotIn("sip_dial", captured)
 
     def test_call_endpoint_returns_busy_when_sip_reports_486(self):
         async def fake_dispatch(room_name, metadata):

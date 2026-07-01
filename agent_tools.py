@@ -5,7 +5,6 @@ import re
 from datetime import datetime, time as dt_time, timedelta, timezone
 from typing import Optional, Callable, Any
 from livekit.agents import llm
-from frappe_client import FrappeRestClient
 from call_status_store import update_call_record, get_call_record, list_call_records
 
 logger = logging.getLogger("agent-tools")
@@ -287,7 +286,7 @@ class CustomerQueryTools(llm.ToolContext):
     """
     ACTIVE_TOOL_NAMES = {"schedule_human_callback", "schedule_ai_followup", "end_call"}
 
-    def __init__(self, client: FrappeRestClient, customer_id: Optional[str] = None, phone_number: Optional[str] = None, on_verify_success: Optional[Callable] = None, session: Optional[Any] = None, ctx: Optional[Any] = None, call_id: Optional[str] = None):
+    def __init__(self, client: Optional[Any] = None, customer_id: Optional[str] = None, phone_number: Optional[str] = None, on_verify_success: Optional[Callable] = None, session: Optional[Any] = None, ctx: Optional[Any] = None, call_id: Optional[str] = None):
         super().__init__(tools=[])
         tool_map = getattr(self, "_fnc_tools_map", None)
         if tool_map is None:

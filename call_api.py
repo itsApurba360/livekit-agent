@@ -58,7 +58,7 @@ def _max_purpose_chars() -> int:
 def _dashboard_summary(calls: list[dict[str, Any]]) -> dict[str, Any]:
     status_counts = Counter(call.get("status") or "unknown" for call in calls)
     connected_statuses = {"answered", "active", "completed"}
-    live_statuses = {"dispatching", "dispatched", "dialing"}
+    live_statuses = {"dispatching", "dispatched", "agent_ready", "dialing"}
     return {
         "total": len(calls),
         "live": sum(1 for call in calls if call.get("status") in live_statuses),
@@ -256,7 +256,7 @@ def dashboard_data(
 ) -> dict[str, Any]:
     _require_auth(authorization)
     calls = list_call_records(limit=limit)
-    active_calls = [c for c in calls if c.get("status") in {"dispatching", "dispatched", "dialing", "answered", "active"}]
+    active_calls = [c for c in calls if c.get("status") in {"dispatching", "dispatched", "agent_ready", "dialing", "answered", "active"}]
     is_running = len(active_calls) > 0 or os.path.exists("agent_running.flag")
     
     agent_error = None
@@ -417,6 +417,22 @@ async def _wait_for_agent_to_join(room_name: str, timeout_seconds: float = 10.0)
     return False
 
 
+async def _wait_for_agent_ready(call_id: str, timeout_seconds: float = 30.0) -> bool:
+    start_time = asyncio.get_event_loop().time()
+    logger.info("Waiting for agent realtime session to be ready for call %s", call_id)
+    while asyncio.get_event_loop().time() - start_time < timeout_seconds:
+        record = get_call_record(call_id) or {}
+        status = record.get("status")
+        if status in {"agent_ready", "active", "answered", "completed"}:
+            logger.info("Agent ready for call %s with status %s", call_id, status)
+            return True
+        if status == "dispatch_failed" or str(status or "").startswith("failed"):
+            return False
+        await asyncio.sleep(0.5)
+    logger.warning("Timed out waiting for agent_ready for call %s after %.1fs", call_id, timeout_seconds)
+    return False
+
+
 @app.post("/calls", response_model=CallResponse)
 async def create_call(
     request: CallRequest,
@@ -468,8 +484,25 @@ async def create_call(
 
     update_call_record(call_id, status="dispatched", event_message="LiveKit agent dispatched")
 
-    # Wait for the agent to join the room to prevent race condition when customer answers immediately
+    # Wait for the agent to join and finish realtime startup before dialing.
     await _wait_for_agent_to_join(room_name)
+    if not await _wait_for_agent_ready(call_id):
+        update_call_record(
+            call_id,
+            status="dispatch_failed",
+            reason="agent_ready_timeout",
+            event_message="LiveKit agent did not become ready before dialing",
+        )
+        await _delete_room_quietly(room_name)
+        return CallResponse(
+            ok=False,
+            call_id=call_id,
+            room_name=room_name,
+            status="dispatch_failed",
+            phone_number=normalized_phone,
+            reason="agent_ready_timeout",
+            error="LiveKit agent did not become ready before dialing",
+        )
 
     try:
         sip_info = await _create_outbound_sip_participant(
@@ -858,4 +891,3 @@ def get_call_recording(call_id: str, request: Request):
         media_type=content_type,
         headers=out_headers,
     )
-

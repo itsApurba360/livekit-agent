@@ -16,7 +16,6 @@ from typing import Any, Optional
 
 # Import local decoupled modules
 import agent_call_context as call_context_helpers
-from frappe_client import FrappeRestClient
 from agent_tools import CustomerQueryTools
 from call_status_store import get_call_record, update_call_record
 
@@ -263,12 +262,6 @@ async def entrypoint(ctx: agents.JobContext):
 
     logger.info(f"Connecting to room: {ctx.room.name}")
 
-    # Initialize remote Frappe REST client
-    frappe_url = os.environ.get("FRAPPE_SITE_URL")
-    api_key = os.environ.get("FRAPPE_API_KEY")
-    api_secret = os.environ.get("FRAPPE_API_SECRET")
-    client = FrappeRestClient(base_url=frappe_url, api_key=api_key, api_secret=api_secret)
-
     # 1. Parse metadata. Room metadata can override dispatch metadata.
     job_metadata = _load_json_dict(getattr(ctx.job, "metadata", None))
     room_metadata = _load_json_dict(getattr(ctx.room, "metadata", None))
@@ -291,15 +284,7 @@ async def entrypoint(ctx: agents.JobContext):
         call_context.sip_call_status,
     )
 
-    # 4. Perform Lookup of Caller via REST Client
     caller_info = {"status": "Unknown", "name": "जी", "company": "हमारी कंपनी"}
-    if phone_number:
-        try:
-            logger.info(f"Performing remote lookup for caller phone: {phone_number}")
-            caller_info = await asyncio.to_thread(client.lookup_caller, phone_number)
-            logger.info(f"Remote caller lookup result: {caller_info}")
-        except Exception as err:
-            logger.error(f"Failed to lookup caller via REST API: {err}")
 
     # Determine which agent to launch
     # If customer matched -> launch Support Agent (Kavya)
@@ -441,9 +426,8 @@ async def entrypoint(ctx: agents.JobContext):
         if not is_gemini:
             session.generate_reply()
 
-    # Initialize function context (passing REST client)
     fnc_ctx = CustomerQueryTools(
-        client=client,
+        client=None,
         customer_id=customer_id,
         phone_number=phone_number,
         on_verify_success=on_verification_success,
@@ -519,6 +503,12 @@ async def entrypoint(ctx: agents.JobContext):
         agent=agent_instance,
         room_options=RoomOptions(**room_options_kwargs),
     )
+    if call_context.call_id:
+        _safe_update_call_record(
+            call_context,
+            status="agent_ready",
+            event_message="Agent realtime session ready",
+        )
 
     # For outbound PSTN, wait for the participant to join (callee answers the phone)
     # ponytail: now we wait for answer after starting session so we are already connected and ready

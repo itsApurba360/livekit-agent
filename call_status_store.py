@@ -512,7 +512,7 @@ def list_active_call_records() -> list[dict[str, Any]]:
             """
             SELECT call_id, room_name, phone_number, status, metadata_json
             FROM calls
-            WHERE status IN ('dispatching', 'dispatched', 'dialing', 'answered', 'active')
+            WHERE status IN ('dispatching', 'dispatched', 'agent_ready', 'dialing', 'answered', 'active')
             ORDER BY created_at ASC
             """,
         ).fetchall()

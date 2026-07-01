@@ -76,6 +76,14 @@ Paste `CALL_API_TOKEN`; the page fetches protected data from `GET /dashboard/dat
 
 ### Running Google Sheets Automation
 
+Preferred one-command runner for the hosted LiveKit Cloud worker:
+
+```bash
+./run_sheet_calls.sh
+```
+
+This loads `.env`, defaults `GOOGLE_SHEETS_SPREADSHEET_ID` to `1_OXV6OAvrhgaSOnp03uJn8no8h3qTpk3g2lUX8CRnH4` when unset, starts `call_api.py` only if the API is not already healthy, sets `LIVEKIT_AGENT_NAME=outbound-caller-prod` by default, and posts `POST /agent/start`. It does **not** start a local `agent.py` worker.
+
 One cycle:
 
 ```bash
@@ -135,6 +143,7 @@ Tests use Python's `unittest` framework despite `pytest` in dev dependencies. Ma
 | `frappe_client.py` | Legacy optional `FrappeRestClient`: pure REST client using Token auth. Methods: `lookup_caller`, `get_resource`, `get_resource_list`, `send_whatsapp_message*` |
 | `agent_config.json` | Runtime config: provider/model/voice, agent personas (prompts + direction-specific greetings), noise_cancellation, custom_tts |
 | `web_ui_server.py` | Minimal HTTP server serving static web tester; mints LiveKit tokens and dispatches the agent into test rooms |
+| `run_sheet_calls.sh` | One-command local launcher for Google Sheets campaigns using the hosted LiveKit Cloud worker; starts the Call API if needed and triggers `/agent/start` |
 | `call_api.py` | FastAPI call-control service: validates bearer auth, normalizes/limits phone numbers, persists call records, serves dashboard/API data, creates LiveKit rooms, dispatches workers, creates outbound SIP participants, maps dial outcomes, proxies recordings, accepts session reports, and starts/kills sheet automation |
 | `call_outcomes.py` | Shared SIP outcome mapping used by the API and worker (`486` → `busy`, `408` → `no_answer`, etc.) |
 | `call_status_store.py` | PostgreSQL persistence layer for outbound call records, event history, transcript/session-report fields, Vobiz recording fields, and metadata. Requires `CALL_API_DATABASE_URL` or `CALL_STATUS_DATABASE_URL`. |

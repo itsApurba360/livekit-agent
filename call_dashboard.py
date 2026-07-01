@@ -292,7 +292,7 @@ DASHBOARD_HTML = """<!doctype html>
       if (!status) return 'status-idle';
       if (status.startsWith('failed') || status === 'dispatch_failed') return 'status-fail';
       if (['completed', 'answered', 'active'].includes(status)) return 'status-ok';
-      if (['dialing', 'dispatching', 'dispatched'].includes(status)) return 'status-live';
+      if (['dialing', 'dispatching', 'dispatched', 'agent_ready'].includes(status)) return 'status-live';
       return 'status-idle';
     };
 

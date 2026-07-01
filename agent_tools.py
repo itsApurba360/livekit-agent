@@ -1,14 +1,94 @@
 import asyncio
 import logging
 import random
+import re
+from datetime import datetime, time as dt_time, timedelta, timezone
 from typing import Optional, Callable, Any
 from livekit.agents import llm
 from frappe_client import FrappeRestClient
-from call_status_store import update_call_record, get_call_record
+from call_status_store import update_call_record, get_call_record, list_call_records
 
 logger = logging.getLogger("agent-tools")
 END_CALL_SPEECH_START_TIMEOUT_SECONDS = 3.0
 END_CALL_MAX_SPEECH_SECONDS = 8.0
+CALLBACK_OFFICE_START = dt_time(10, 0)
+CALLBACK_OFFICE_END = dt_time(18, 0)
+CALLBACK_SLOT_MINUTES = 30
+CALLBACK_IST = timezone(timedelta(hours=5, minutes=30))
+CALLBACK_HOLIDAYS_2026 = {
+    "2026-01-01": "New Year",
+    "2026-01-04": "Sunday",
+    "2026-01-11": "Sunday",
+    "2026-01-15": "Makar Sankranthi",
+    "2026-01-18": "Sunday",
+    "2026-01-24": "Saturday Off",
+    "2026-01-25": "Sunday",
+    "2026-01-26": "Republic Day",
+    "2026-02-01": "Sunday",
+    "2026-02-08": "Sunday",
+    "2026-02-15": "Sunday",
+    "2026-02-22": "Sunday",
+    "2026-02-28": "Saturday off",
+    "2026-03-01": "Sunday",
+    "2026-03-08": "Sunday",
+    "2026-03-15": "Sunday",
+    "2026-03-19": "Ugadi",
+    "2026-03-22": "Sunday",
+    "2026-03-28": "Saturday off",
+    "2026-03-29": "Sunday",
+    "2026-04-05": "Sunday",
+    "2026-04-12": "Sunday",
+    "2026-04-19": "Sunday",
+    "2026-04-25": "Saturday off",
+    "2026-04-26": "Sunday",
+    "2026-05-01": "Labour Day",
+    "2026-05-03": "Sunday",
+    "2026-05-10": "Sunday",
+    "2026-05-17": "Sunday",
+    "2026-05-23": "Saturday off",
+    "2026-05-24": "Sunday",
+    "2026-05-31": "Sunday",
+    "2026-06-07": "Sunday",
+    "2026-06-14": "Sunday",
+    "2026-06-21": "Sunday",
+    "2026-06-27": "Saturday off",
+    "2026-06-28": "Sunday",
+    "2026-07-05": "Sunday",
+    "2026-07-12": "Sunday",
+    "2026-07-19": "Sunday",
+    "2026-07-25": "Saturday off",
+    "2026-07-26": "Sunday",
+    "2026-08-02": "Sunday",
+    "2026-08-09": "Sunday",
+    "2026-08-15": "Independence Day",
+    "2026-08-16": "Sunday",
+    "2026-08-22": "Saturday off",
+    "2026-08-23": "Sunday",
+    "2026-08-30": "Sunday",
+    "2026-09-06": "Sunday",
+    "2026-09-13": "Sunday",
+    "2026-09-20": "Sunday",
+    "2026-09-26": "Saturday off",
+    "2026-09-27": "Sunday",
+    "2026-10-04": "Sunday",
+    "2026-10-11": "Sunday",
+    "2026-10-18": "Sunday",
+    "2026-10-20": "Maha Navami / Vijayadashami",
+    "2026-10-24": "Saturday off",
+    "2026-10-25": "Sunday",
+    "2026-11-01": "Sunday",
+    "2026-11-08": "Sunday",
+    "2026-11-09": "Diwali",
+    "2026-11-15": "Sunday",
+    "2026-11-22": "Sunday",
+    "2026-11-28": "Saturday off",
+    "2026-11-29": "Sunday",
+    "2026-12-06": "Sunday",
+    "2026-12-13": "Sunday",
+    "2026-12-20": "Sunday",
+    "2026-12-26": "Saturday off",
+    "2026-12-27": "Sunday",
+}
 
 
 async def _wait_for_end_call_speech(session: Optional[Any]) -> None:
@@ -45,6 +125,158 @@ async def _wait_for_end_call_speech(session: Optional[Any]) -> None:
             pass
     finally:
         session.off("agent_state_changed", on_agent_state_changed)
+
+
+def _now_ist() -> datetime:
+    return datetime.now(CALLBACK_IST).replace(tzinfo=None)
+
+
+def _relative_callback_minutes(value: str) -> Optional[int]:
+    text = (value or "").strip().lower()
+    match = re.fullmatch(r"\+(\d{1,4})", text) or re.fullmatch(
+        r"(?:\+|in\s+|after\s+)?(\d{1,4})\s*(?:m|min|mins|minute|minutes)(?:\s+later)?",
+        text,
+    )
+    if not match:
+        return None
+    minutes = int(match.group(1))
+    return minutes if 1 <= minutes <= 1440 else None
+
+
+def _parse_callback_schedule(date_str: str, time_str: str) -> Optional[datetime]:
+    relative_minutes = _relative_callback_minutes(time_str) or _relative_callback_minutes(date_str)
+    if relative_minutes is not None:
+        return (_now_ist() + timedelta(minutes=relative_minutes)).replace(second=0, microsecond=0)
+
+    parsed_date = None
+    for date_fmt in ("%d/%m/%Y", "%Y-%m-%d"):
+        try:
+            parsed_date = datetime.strptime((date_str or "").strip(), date_fmt).date()
+            break
+        except ValueError:
+            pass
+    if not parsed_date:
+        return None
+
+    for time_fmt in ("%H:%M", "%H:%M:%S"):
+        try:
+            parsed_time = datetime.strptime((time_str or "").strip(), time_fmt).time()
+            return datetime.combine(parsed_date, parsed_time.replace(second=0, microsecond=0))
+        except ValueError:
+            pass
+    return None
+
+
+def _format_callback_schedule(schedule: datetime) -> tuple[str, str]:
+    return schedule.strftime("%d/%m/%Y"), schedule.strftime("%H:%M")
+
+
+def _is_callback_office_time(schedule: datetime) -> bool:
+    return CALLBACK_OFFICE_START <= schedule.time() <= CALLBACK_OFFICE_END
+
+
+def _callback_holiday_name(schedule: datetime) -> Optional[str]:
+    return CALLBACK_HOLIDAYS_2026.get(schedule.date().isoformat())
+
+
+def _round_up_callback_slot(schedule: datetime) -> datetime:
+    minute = schedule.minute
+    extra = minute % CALLBACK_SLOT_MINUTES
+    if extra:
+        schedule += timedelta(minutes=CALLBACK_SLOT_MINUTES - extra)
+    return schedule.replace(second=0, microsecond=0)
+
+
+def _scheduled_callback_times(exclude_call_id: Optional[str]) -> dict[str, set[str]]:
+    occupied: dict[str, set[str]] = {}
+    # ponytail: recent 500 records are enough for the current campaign volume; add a date-indexed query if this grows.
+    for record in list_call_records(limit=500):
+        if record.get("call_id") == exclude_call_id:
+            continue
+        metadata = record.get("metadata") or {}
+        schedule = _parse_callback_schedule(
+            str(metadata.get("next_action_date") or ""),
+            str(metadata.get("next_action_time") or ""),
+        )
+        if not schedule:
+            continue
+        date_key, time_key = _format_callback_schedule(schedule)
+        occupied.setdefault(date_key, set()).add(time_key)
+    return occupied
+
+
+def _first_available_callback_slot(
+    requested: datetime,
+    occupied: dict[str, set[str]],
+    *,
+    prefer_same_day: bool = False,
+) -> Optional[datetime]:
+    if prefer_same_day and requested.time() > CALLBACK_OFFICE_END:
+        if not _callback_holiday_name(requested):
+            same_day = datetime.combine(requested.date(), CALLBACK_OFFICE_END)
+            while same_day.time() >= CALLBACK_OFFICE_START:
+                date_key, time_key = _format_callback_schedule(same_day)
+                if time_key not in occupied.get(date_key, set()):
+                    return same_day
+                same_day -= timedelta(minutes=CALLBACK_SLOT_MINUTES)
+        candidate = datetime.combine(requested.date() + timedelta(days=1), CALLBACK_OFFICE_START)
+    elif prefer_same_day or requested.time() < CALLBACK_OFFICE_START:
+        candidate = datetime.combine(requested.date(), CALLBACK_OFFICE_START)
+    elif requested.time() > CALLBACK_OFFICE_END:
+        candidate = datetime.combine(requested.date() + timedelta(days=1), CALLBACK_OFFICE_START)
+    else:
+        candidate = _round_up_callback_slot(requested + timedelta(minutes=1))
+
+    for day_offset in range(8):
+        day = candidate.date() + timedelta(days=day_offset)
+        if day.isoformat() in CALLBACK_HOLIDAYS_2026:
+            continue
+        start = candidate if day_offset == 0 else datetime.combine(day, CALLBACK_OFFICE_START)
+        if start.time() < CALLBACK_OFFICE_START:
+            start = datetime.combine(day, CALLBACK_OFFICE_START)
+        start = _round_up_callback_slot(start)
+
+        while start.time() <= CALLBACK_OFFICE_END:
+            date_key, time_key = _format_callback_schedule(start)
+            if time_key not in occupied.get(date_key, set()):
+                return start
+            start += timedelta(minutes=CALLBACK_SLOT_MINUTES)
+    return None
+
+
+def _validate_callback_slot(date_str: str, time_str: str, call_id: Optional[str]) -> tuple[bool, str, str, str]:
+    requested = _parse_callback_schedule(date_str, time_str)
+    if not requested:
+        return False, "", "", "I could not understand that callback date or time. Please ask for a DD/MM/YYYY date and HH:MM IST time."
+
+    occupied = _scheduled_callback_times(call_id)
+    requested_date, requested_time = _format_callback_schedule(requested)
+    reason = None
+    holiday_name = _callback_holiday_name(requested)
+    if holiday_name:
+        reason = f"an LSA holiday ({holiday_name})"
+    elif not _is_callback_office_time(requested):
+        reason = "outside our office hours of 10:00 to 18:00 IST"
+    elif requested_time in occupied.get(requested_date, set()):
+        reason = "already scheduled for another customer"
+    else:
+        return True, requested_date, requested_time, ""
+
+    suggestion = _first_available_callback_slot(
+        requested,
+        occupied,
+        prefer_same_day=not _is_callback_office_time(requested),
+    )
+    if not suggestion:
+        return False, "", "", f"That callback time is {reason}. Please ask the customer for another time between 10:00 and 18:00 IST."
+
+    suggestion_date, suggestion_time = _format_callback_schedule(suggestion)
+    return (
+        False,
+        "",
+        "",
+        f"That callback time is {reason}. Politely suggest {suggestion_date} at {suggestion_time} IST instead and ask if that works. Do not schedule it until the customer confirms.",
+    )
 
 class CustomerQueryTools(llm.ToolContext):
     """
@@ -528,17 +760,23 @@ class CustomerQueryTools(llm.ToolContext):
             
         return "Failed to end call: context not available."
 
-    @llm.function_tool(description="Schedule a follow-up callback with a human representative. Call this when the customer specifies a time/day for a callback or requests to speak to a human executive.")
-    async def schedule_human_callback(self, date_str: str, time_str: str, client_notes: Optional[str] = None):
+    @llm.function_tool(description="Schedule a follow-up callback with a human representative. Use DD/MM/YYYY and HH:MM IST, or time_str like '+5 minutes' for requests such as 'call me after 5 minutes'; relative minutes are resolved in IST. Call once with confirmed=false to check the slot and ask the customer to confirm; only call with confirmed=true after the customer clearly agrees. Office hours are 10:00 to 18:00 IST.")
+    async def schedule_human_callback(self, date_str: str, time_str: str, client_notes: Optional[str] = None, confirmed: bool = False):
         """
         Args:
-            date_str: Date for the callback in DD/MM/YYYY format (e.g. '30/06/2026').
-            time_str: Time in 24-hour IST format (e.g. '14:30').
+            date_str: Date for the callback in DD/MM/YYYY format, or 'today' when time_str is a relative offset.
+            time_str: Time in 24-hour IST format, or relative IST offset like '+5 minutes'.
             client_notes: Optional notes or context about why the callback is scheduled.
+            confirmed: Set true only after the customer has confirmed the exact date and time.
         """
         logger.info(f"Scheduling human callback on {date_str} at {time_str}. Notes: {client_notes}")
         if self.call_id:
             try:
+                allowed, date_str, time_str, message = _validate_callback_slot(date_str, time_str, self.call_id)
+                if not allowed:
+                    return message
+                if not confirmed:
+                    return f"Please confirm with the customer: callback on {date_str} at {time_str} IST. Do not schedule it until they clearly agree."
                 record = get_call_record(self.call_id)
                 metadata = record.get("metadata") or {} if record else {}
                 metadata["next_action"] = "Human"
@@ -559,17 +797,23 @@ class CustomerQueryTools(llm.ToolContext):
                 return f"Error scheduling callback in database: {str(e)}."
         return "Failed to schedule callback: Call ID not available."
 
-    @llm.function_tool(description="Schedule the next AI follow-up call when the customer is not ready yet and does not need human help.")
-    async def schedule_ai_followup(self, date_str: str, time_str: str, client_notes: Optional[str] = None):
+    @llm.function_tool(description="Schedule the next AI follow-up call when the customer is not ready yet and does not need human help. Use DD/MM/YYYY and HH:MM IST, or time_str like '+5 minutes' for requests such as 'call me after 5 minutes'; relative minutes are resolved in IST. Call once with confirmed=false to check the slot and ask the customer to confirm; only call with confirmed=true after the customer clearly agrees. Office hours are 10:00 to 18:00 IST.")
+    async def schedule_ai_followup(self, date_str: str, time_str: str, client_notes: Optional[str] = None, confirmed: bool = False):
         """
         Args:
-            date_str: Date for the next AI call in DD/MM/YYYY format (e.g. '30/06/2026').
-            time_str: Time in 24-hour IST format (e.g. '14:30').
+            date_str: Date for the next AI call in DD/MM/YYYY format, or 'today' when time_str is a relative offset.
+            time_str: Time in 24-hour IST format, or relative IST offset like '+5 minutes'.
             client_notes: Optional notes or context about why AI should call again later.
+            confirmed: Set true only after the customer has confirmed the exact date and time.
         """
         logger.info(f"Scheduling AI follow-up on {date_str} at {time_str}. Notes: {client_notes}")
         if self.call_id:
             try:
+                allowed, date_str, time_str, message = _validate_callback_slot(date_str, time_str, self.call_id)
+                if not allowed:
+                    return message
+                if not confirmed:
+                    return f"Please confirm with the customer: AI follow-up on {date_str} at {time_str} IST. Do not schedule it until they clearly agree."
                 record = get_call_record(self.call_id)
                 metadata = record.get("metadata") or {} if record else {}
                 metadata["next_action"] = "AI Call"

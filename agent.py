@@ -346,17 +346,38 @@ async def entrypoint(ctx: agents.JobContext):
         else:
             prompt_base += "\n\nNo Customer is currently linked to this outbound call. Customer lookup tools are disabled for now; continue with the call purpose and use only scheduling or end-call tools."
 
+        prompt_base += (
+            "\n\nLanguage rules:\n"
+            "- Start in simple Hindi/Hinglish. If the customer speaks another language, immediately switch to that language and keep using it until they ask to switch again.\n"
+            "- Do not schedule an AI follow-up or human callback because of language preference or language mismatch. You can continue the same call in the customer's language."
+        )
+
+        from datetime import datetime, timedelta, timezone
+        now_ist = datetime.now(timezone(timedelta(hours=5, minutes=30)))
+        prompt_base += (
+            "\n\nScheduling rules:\n"
+            f"- Current IST date/time is {now_ist.strftime('%A, %d/%m/%Y %H:%M')}.\n"
+            "- Schedule a later call only when the customer explicitly asks for it or clearly agrees to it.\n"
+            "- Resolve natural date phrases like today, tomorrow, next Monday, next week, morning, afternoon, and evening into an exact DD/MM/YYYY date and HH:MM IST time before using a scheduling tool.\n"
+            "- For requests like 'call me after 5 minutes' or '10 minutes later', call the scheduling tool with date_str='today' and time_str='+5 minutes' or '+10 minutes'. The tool resolves that from current IST; never use UTC or server-local time for these requests.\n"
+            "- If the date or time is still unclear, ask one short clarification question instead of scheduling.\n"
+            "- Before making the final entry, repeat the exact date and time to the customer and ask for confirmation.\n"
+            "- First call the scheduling tool with confirmed=false to check office hours and availability, then call it with confirmed=true only after the customer clearly agrees.\n"
+            "- Do not schedule outside 10:00 to 18:00 IST or on the LSA holiday list. If the requested slot is unavailable, offer the available slot returned by the tool and wait for confirmation.\n"
+            "- Do not schedule for convenience, language mismatch, or uncertainty unless the customer gives or accepts a specific date and time."
+        )
+
         is_sheet_campaign = call_context.requested_by == "sheets_automation"
         if is_sheet_campaign:
-            from datetime import datetime
-            current_date_str = datetime.now().strftime("%d/%m/%Y")
+            current_date_str = now_ist.strftime("%d/%m/%Y")
             prompt_base += (
                 f"\n\n--- CAMPAIGN RULES: GST DOCUMENT COLLECTION & FOLLOW-UP ---\n"
                 f"- This call is for GST document collection follow-up. "
                 f"Do NOT attempt to collect document details directly, and do NOT ask for OTP or WhatsApp verification.\n"
                 f"- Inform the customer that LSA Office requires their GST documents for the filing period.\n"
-                f"- If the customer is not ready yet and does not need human help, ask when AI should call again and call `schedule_ai_followup`.\n"
-                f"- If the customer says they need help, have a blocker, want support, or prefer a person, call `schedule_human_callback` with notes explaining the issue. This stops AI follow-ups until a human resolves it.\n"
+                f"- If the customer speaks another language, switch to that language and continue this call. Do not treat language preference as not ready.\n"
+                f"- If the customer is not ready yet and does not need human help, ask whether they want an AI call later. Use `schedule_ai_followup` only after they give or accept a specific date/time and confirm it.\n"
+                f"- If the customer says they need help, have a blocker, want support, or prefer a person, use `schedule_human_callback` only after they give or accept a specific date/time and confirm it. This stops AI follow-ups until a human resolves it.\n"
                 f"- The current date is {current_date_str}. Convert relative dates like 'tomorrow' or 'today evening' to actual dates (DD/MM/YYYY) before calling a scheduling tool.\n"
                 f"- After scheduling either AI follow-up or human help, thank them politely in simple Hindi/Hinglish, then end the call using the `end_call` tool."
             )
@@ -473,15 +494,43 @@ async def entrypoint(ctx: agents.JobContext):
     fnc_ctx.session = session
 
     agent_tools = list(fnc_ctx.function_tools.values())
+    system_prompt = get_compiled_prompt(is_verified=fnc_ctx.is_verified)
 
-    # For outbound PSTN, LiveKit recommends dialing and waiting for answer before
-    # starting the AgentSession so the callee does not hear a partial greeting.
+    # Start LiveKit Agent Session immediately to warm up connection
+    nc_option = None
+    if agent_config.get("noise_cancellation", False):
+        try:
+            from livekit.plugins import ai_coustics
+
+            nc_option = ai_coustics.audio_enhancement(model=ai_coustics.EnhancerModel.QUAIL_VF_S)
+        except ImportError as err:
+            logger.warning("Noise cancellation disabled; ai_coustics plugin unavailable: %s", err)
+    
+    agent_instance = StandaloneAgent(instructions=system_prompt, tools=agent_tools)
+    room_options_kwargs = {
+        "audio_input": AudioInputOptions(
+            noise_cancellation=nc_option,
+        ),
+        "close_on_disconnect": True,
+        "delete_room_on_close": True,
+    }
+    if call_context.participant_identity:
+        room_options_kwargs["participant_identity"] = call_context.participant_identity
+
+    logger.info("Starting AgentSession immediately to minimize pickup response latency.")
+    await session.start(
+        room=ctx.room,
+        agent=agent_instance,
+        room_options=RoomOptions(**room_options_kwargs),
+    )
+
+    # For outbound PSTN, wait for the participant to join (callee answers the phone)
+    # ponytail: now we wait for answer after starting session so we are already connected and ready
     call_context = await _prepare_outbound_participant(ctx, call_context, config_dict)
     if not call_context.ready:
         return
     phone_number = call_context.phone_number
     fnc_ctx.phone_number = phone_number
-    system_prompt = get_compiled_prompt(is_verified=fnc_ctx.is_verified)
     _register_call_status_handlers(ctx, call_context, session)
     _register_session_report_handler(ctx, call_context, session)
 
@@ -578,31 +627,6 @@ async def entrypoint(ctx: agents.JobContext):
             except Exception as err:
                 logger.warning("Failed to perform final call status cleanup on session close: %s", err)
 
-    # Start LiveKit Agent Session
-    nc_option = None
-    if agent_config.get("noise_cancellation", False):
-        try:
-            from livekit.plugins import ai_coustics
-
-            nc_option = ai_coustics.audio_enhancement(model=ai_coustics.EnhancerModel.QUAIL_VF_S)
-        except ImportError as err:
-            logger.warning("Noise cancellation disabled; ai_coustics plugin unavailable: %s", err)
-    agent_instance = StandaloneAgent(instructions=system_prompt, tools=agent_tools)
-    room_options_kwargs = {
-        "audio_input": AudioInputOptions(
-            noise_cancellation=nc_option,
-        ),
-        "close_on_disconnect": True,
-        "delete_room_on_close": True,
-    }
-    if call_context.participant_identity:
-        room_options_kwargs["participant_identity"] = call_context.participant_identity
-    await session.start(
-        room=ctx.room,
-        agent=agent_instance,
-        room_options=RoomOptions(**room_options_kwargs),
-    )
-
     # Greet user at startup
     if "3.1" not in model and not call_context.is_outbound:
         await asyncio.sleep(0.75)  # Wait for connection clicks/pops to settle
@@ -611,12 +635,13 @@ async def entrypoint(ctx: agents.JobContext):
         )
     elif call_context.is_outbound:
         logger.info("Outbound call: waiting for callee to speak first.")
-        # Start outbound silence monitor to speak first if caller is silent for 5 seconds
+        # Start outbound silence monitor to speak first if caller is silent for 2.5 seconds
+        # ponytail: reduced silence timeout to 2.5s to respond faster if the customer is quiet
         async def outbound_silence_trigger():
             try:
-                await asyncio.sleep(5.0)
+                await asyncio.sleep(2.5)
                 if not has_started_speaking and not is_user_speaking:
-                    logger.info("Outbound initial silence detected (5 seconds). Agent speaking first.")
+                    logger.info("Outbound initial silence detected (2.5 seconds). Agent speaking first.")
                     # Inject a system note to prompt the LLM to greet the user dynamically
                     await session.generate_reply(
                         instructions=(

@@ -51,13 +51,13 @@ set -a && source .env && set +a
 LIVEKIT_AGENT_NAME=outbound-caller-local .venv/bin/python agent.py dev
 ```
 
-If `uv run agent.py dev` works in the current environment, it is fine to use. On some local platforms `uv run` may fail resolving `onnxruntime==1.27.0`; use the existing `.venv/bin/python` command above in that case.
+For local runs in this repo, prefer the existing virtualenv Python (`.venv/bin/python`) instead of `uv run`. Some local platforms fail resolving `onnxruntime==1.27.0` during `uv run`, while the checked-out virtualenv already has the working dependency set.
 
 Hermes, the dashboard, and sheet automation trigger outbound PSTN calls through `call_api.py`. Run the Call API:
 
 ```bash
 set -a && source .env && set +a
-LIVEKIT_AGENT_NAME=outbound-caller-prod uv run uvicorn call_api:app --host 127.0.0.1 --port 8000
+LIVEKIT_AGENT_NAME=outbound-caller-prod .venv/bin/python -m uvicorn call_api:app --host 127.0.0.1 --port 8000
 ```
 
 Use `--host 0.0.0.0` only when another device/service must reach the API over LAN/VPN/tunnel and the API is protected by HTTPS/bearer auth. Verify with:
@@ -80,7 +80,7 @@ One cycle:
 
 ```bash
 set -a && source .env && set +a
-uv run sheet_calling_automation.py
+.venv/bin/python sheet_calling_automation.py
 ```
 
 Dashboard-managed loop:

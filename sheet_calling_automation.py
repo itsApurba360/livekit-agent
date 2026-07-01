@@ -53,8 +53,10 @@ def _header_index(headers: list[str]) -> dict[str, int]:
     return {header: idx + 1 for idx, header in enumerate(headers) if header}
 
 def _int_value(value, default: int = 0) -> int:
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return default
     try:
-        return int(value or default)
+        return int(value)
     except (TypeError, ValueError):
         return default
 

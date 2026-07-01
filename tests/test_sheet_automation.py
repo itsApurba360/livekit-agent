@@ -5,8 +5,8 @@ from datetime import datetime
 from gspread.utils import a1_to_rowcol
 
 # Import components to test
-from agent_tools import CustomerQueryTools, _wait_for_end_call_speech
-from sheet_calling_automation import parse_schedule, sync_completed_calls_to_sheets
+from agent_tools import CALLBACK_HOLIDAYS_2026, CustomerQueryTools, _wait_for_end_call_speech
+from sheet_calling_automation import _int_value, parse_schedule, sync_completed_calls_to_sheets
 from agent import CallContext, _call_context_prompt
 
 
@@ -112,9 +112,20 @@ class TestSheetAutomation(unittest.TestCase):
         dt_invalid = parse_schedule("invalid", "invalid")
         self.assertEqual(dt_invalid, datetime.min)
 
+    def test_int_value_preserves_zero(self):
+        self.assertEqual(_int_value(0, 3), 0)
+        self.assertEqual(_int_value("0", 3), 0)
+        self.assertEqual(_int_value("", 3), 3)
+        self.assertEqual(_int_value(None, 3), 3)
+
+    def test_lsa_2026_holiday_list_extracted(self):
+        self.assertEqual(len(CALLBACK_HOLIDAYS_2026), 72)
+        self.assertEqual(CALLBACK_HOLIDAYS_2026["2026-11-09"], "Diwali")
+
+    @patch("agent_tools.list_call_records", return_value=[])
     @patch("agent_tools.update_call_record")
     @patch("agent_tools.get_call_record")
-    def test_schedule_human_callback(self, mock_get, mock_update):
+    def test_schedule_human_callback(self, mock_get, mock_update, _mock_list):
         # Setup mocks
         mock_get.return_value = {
             "call_id": "call_123",
@@ -131,7 +142,7 @@ class TestSheetAutomation(unittest.TestCase):
         )
         
         # Invoke schedule_human_callback
-        res = asyncio_run(tools.schedule_human_callback("30/06/2026", "15:00", "Spoke to Apurba. Needs follow up."))
+        res = asyncio_run(tools.schedule_human_callback("30/06/2026", "15:00", "Spoke to Apurba. Needs follow up.", confirmed=True))
         
         # Verify persisted call record was updated
         self.assertIn("scheduled", res)
@@ -144,9 +155,10 @@ class TestSheetAutomation(unittest.TestCase):
         self.assertEqual(kwargs["metadata"]["client_comment"], "Spoke to Apurba. Needs follow up.")
         self.assertEqual(kwargs["metadata"]["help_needed_notes"], "Spoke to Apurba. Needs follow up.")
 
+    @patch("agent_tools.list_call_records", return_value=[])
     @patch("agent_tools.update_call_record")
     @patch("agent_tools.get_call_record")
-    def test_schedule_ai_followup(self, mock_get, mock_update):
+    def test_schedule_ai_followup(self, mock_get, mock_update, _mock_list):
         mock_get.return_value = {
             "call_id": "call_123",
             "metadata": {"cid": "CUST01", "source": "sheets_automation"}
@@ -160,7 +172,7 @@ class TestSheetAutomation(unittest.TestCase):
             call_id="call_123"
         )
 
-        res = asyncio_run(tools.schedule_ai_followup("01/07/2026", "11:00", "Customer asked AI to call tomorrow."))
+        res = asyncio_run(tools.schedule_ai_followup("01/07/2026", "11:00", "Customer asked AI to call tomorrow.", confirmed=True))
 
         self.assertIn("AI follow-up", res)
         mock_update.assert_called_once()
@@ -170,6 +182,95 @@ class TestSheetAutomation(unittest.TestCase):
         self.assertEqual(kwargs["metadata"]["next_action_date"], "01/07/2026")
         self.assertEqual(kwargs["metadata"]["next_action_time"], "11:00")
         self.assertEqual(kwargs["metadata"]["client_comment"], "Customer asked AI to call tomorrow.")
+
+    @patch("agent_tools.list_call_records", return_value=[])
+    @patch("agent_tools.update_call_record")
+    @patch("agent_tools.get_call_record")
+    def test_schedule_ai_followup_requires_confirmation_before_write(self, mock_get, mock_update, _mock_list):
+        tools = CustomerQueryTools(client=MagicMock(), call_id="call_123")
+
+        res = asyncio_run(tools.schedule_ai_followup("01/07/2026", "11:00", "Customer asked AI to call tomorrow."))
+
+        self.assertIn("Please confirm", res)
+        self.assertIn("01/07/2026 at 11:00 IST", res)
+        mock_get.assert_not_called()
+        mock_update.assert_not_called()
+
+    @patch("agent_tools._now_ist", return_value=datetime(2026, 7, 1, 11, 5))
+    @patch("agent_tools.list_call_records", return_value=[])
+    @patch("agent_tools.update_call_record")
+    @patch("agent_tools.get_call_record")
+    def test_schedule_ai_followup_relative_minutes_uses_ist(self, mock_get, mock_update, _mock_list, _mock_now):
+        mock_get.return_value = {"call_id": "call_123", "metadata": {}}
+        tools = CustomerQueryTools(client=MagicMock(), call_id="call_123")
+
+        res = asyncio_run(tools.schedule_ai_followup("today", "+5 minutes", "Customer asked AI to call after 5 minutes.", confirmed=True))
+
+        self.assertIn("01/07/2026 at 11:10", res)
+        args, kwargs = mock_update.call_args
+        self.assertEqual(args[0], "call_123")
+        self.assertEqual(kwargs["metadata"]["next_action_date"], "01/07/2026")
+        self.assertEqual(kwargs["metadata"]["next_action_time"], "11:10")
+
+    @patch("agent_tools.list_call_records", return_value=[])
+    @patch("agent_tools.update_call_record")
+    @patch("agent_tools.get_call_record")
+    def test_schedule_human_callback_rejects_outside_office_hours(self, mock_get, mock_update, _mock_list):
+        tools = CustomerQueryTools(client=MagicMock(), call_id="call_123")
+
+        res = asyncio_run(tools.schedule_human_callback("30/06/2026", "09:30", "Needs help."))
+
+        self.assertIn("outside our office hours", res)
+        self.assertIn("30/06/2026 at 10:00 IST", res)
+        mock_get.assert_not_called()
+        mock_update.assert_not_called()
+
+    @patch("agent_tools.list_call_records", return_value=[])
+    @patch("agent_tools.update_call_record")
+    @patch("agent_tools.get_call_record")
+    def test_schedule_ai_followup_after_hours_suggests_same_day(self, mock_get, mock_update, _mock_list):
+        tools = CustomerQueryTools(client=MagicMock(), call_id="call_123")
+
+        res = asyncio_run(tools.schedule_ai_followup("01/07/2026", "19:00", "Customer asked AI to call in evening."))
+
+        self.assertIn("outside our office hours", res)
+        self.assertIn("01/07/2026 at 18:00 IST", res)
+        mock_get.assert_not_called()
+        mock_update.assert_not_called()
+
+    @patch("agent_tools.list_call_records", return_value=[])
+    @patch("agent_tools.update_call_record")
+    @patch("agent_tools.get_call_record")
+    def test_schedule_ai_followup_rejects_lsa_holiday(self, mock_get, mock_update, _mock_list):
+        tools = CustomerQueryTools(client=MagicMock(), call_id="call_123")
+
+        res = asyncio_run(tools.schedule_ai_followup("09/11/2026", "11:00", "Customer asked AI to call on Diwali."))
+
+        self.assertIn("LSA holiday (Diwali)", res)
+        self.assertIn("10/11/2026 at 10:00 IST", res)
+        mock_get.assert_not_called()
+        mock_update.assert_not_called()
+
+    @patch("agent_tools.list_call_records")
+    @patch("agent_tools.update_call_record")
+    @patch("agent_tools.get_call_record")
+    def test_schedule_ai_followup_rejects_existing_slot(self, mock_get, mock_update, mock_list):
+        mock_list.return_value = [{
+            "call_id": "other_call",
+            "metadata": {
+                "next_action": "AI Call",
+                "next_action_date": "01/07/2026",
+                "next_action_time": "11:00",
+            },
+        }]
+        tools = CustomerQueryTools(client=MagicMock(), call_id="call_123")
+
+        res = asyncio_run(tools.schedule_ai_followup("01/07/2026", "11:00", "Customer asked AI to call later."))
+
+        self.assertIn("already scheduled for another customer", res)
+        self.assertIn("01/07/2026 at 11:30 IST", res)
+        mock_get.assert_not_called()
+        mock_update.assert_not_called()
 
     @patch("sheet_calling_automation.check_stop_requested", return_value=False)
     @patch("call_status_store.update_call_record")

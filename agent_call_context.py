@@ -573,18 +573,15 @@ async def _wait_for_api_dialed_outbound_participant(
         participant_identity=participant_identity,
         use_job_wait=True,
     )
-    for _attempt in range(90):
-        if participant:
-            sip_status = str(_participant_attrs(participant).get("sip.callStatus") or "").strip().lower()
-            if sip_status == "active":
+    # ponytail: if the participant exists immediately, skip status check loop to save 1s+ delay
+    if not participant:
+        for _attempt in range(90):
+            participant = _find_sip_participant(ctx, participant_identity=participant_identity)
+            if participant:
                 break
-            if sip_status == "disconnected":
-                participant = None
-                break
-        await asyncio.sleep(1)
-        participant = _find_sip_participant(ctx, participant_identity=participant_identity)
+            await asyncio.sleep(1)
 
-    if not participant or str(_participant_attrs(participant).get("sip.callStatus") or "").strip().lower() != "active":
+    if not participant:
         logger.error("API-dialed outbound call did not get SIP participant: %s", participant_identity)
         _safe_update_call_record(
             call_context,
@@ -602,7 +599,7 @@ async def _wait_for_api_dialed_outbound_participant(
         updated_context,
         status="active",
         participant_identity=getattr(participant, "identity", None),
-        participant_status=updated_context.sip_call_status,
+        participant_status=updated_context.sip_call_status or "active",
         sip_call_id=updated_context.sip_call_id,
         event_message="API-dialed SIP participant active in room",
     )

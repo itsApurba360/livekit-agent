@@ -244,6 +244,14 @@ uv run uvicorn call_api:app --host 0.0.0.0 --port 8000
 
 Expose the Call API only behind HTTPS, bearer auth, and tight country-prefix restrictions. The Call API service must be configured with `LIVEKIT_AGENT_NAME=outbound-caller-prod` to dispatch the LiveKit Cloud worker.
 
+## Working with Gemini 3.1 Live
+
+When using `gemini-3.1-flash-live-preview` (which has mutable context = False):
+- **No dynamic turn generation**: `session.generate_reply()` is not supported and will throw `RealtimeError`. Do not call it.
+- **No text say without TTS**: `session.say(text)` requires a separate TTS. Calling it without an attached TTS model raises `RuntimeError` and silent crashes in background tasks.
+- **No mid-session config updates**: Changing system prompt/instructions, chat context, or tools during the call will be ignored by the LiveKit Google realtime plugin. All context must be fully populated at session startup.
+- **Outbound call initiation**: Avoid all python-side active greeting triggers (like silence monitors or startup `say`). Instead, instruct the model in its `system_prompt` with the initial greeting templates, and let it greet the user as soon as the user makes the first utterance.
+
 Docs:
 
 - `docs/hermes-call-control.md` — Call API/Hermes/dashboard/recording contract.

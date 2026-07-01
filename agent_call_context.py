@@ -322,24 +322,43 @@ def _session_report_payload(session: AgentSession, ctx: agents.JobContext, call_
 def _post_session_report_sync(call_id: str, payload: dict[str, Any]) -> None:
     base_url = _call_api_internal_url()
     token = _call_api_internal_token()
-    if not base_url or not token:
-        logger.info("Skipping session report callback; CALL_API_INTERNAL_URL/LIVEKIT_CALL_API_URL or token is not configured")
-        return
-    response = requests.post(
-        f"{base_url}/internal/calls/{call_id}/session-report",
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-        json=payload,
-        timeout=20,
-    )
-    response.raise_for_status()
+    posted_via_api = False
+
+    if base_url and token:
+        try:
+            response = requests.post(
+                f"{base_url}/internal/calls/{call_id}/session-report",
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                json=payload,
+                timeout=20,
+            )
+            response.raise_for_status()
+            posted_via_api = True
+            logger.info("Successfully posted session report to Call API for %s", call_id)
+        except Exception as err:
+            logger.warning("Failed to post session report to Call API for %s: %s. Falling back to direct database write.", call_id, err)
+
+    if not posted_via_api:
+        logger.info("Writing session report directly to PostgreSQL database for %s", call_id)
+        try:
+            update_call_record(
+                call_id,
+                transcript_source=payload.get("transcript_source") or "livekit",
+                transcript_text=payload.get("transcript_text"),
+                session_report=payload.get("report"),
+                event_message="LiveKit session report stored directly by worker",
+                event_details={"transcript_source": payload.get("transcript_source") or "livekit"},
+            )
+        except Exception as err:
+            logger.warning("Failed to store session report directly in database for %s: %s", call_id, err)
 
 
 async def _post_session_report(call_id: str, payload: dict[str, Any]) -> None:
     try:
         await asyncio.to_thread(_post_session_report_sync, call_id, payload)
-        logger.info("Posted LiveKit session report for call %s", call_id)
+        logger.info("Processed LiveKit session report for call %s", call_id)
     except Exception as err:
-        logger.warning("Failed to post LiveKit session report for call %s: %s", call_id, err)
+        logger.warning("Failed to process LiveKit session report for call %s: %s", call_id, err)
 
 
 def _participant_matches_call(call_context: CallContext, participant: Any) -> bool:
@@ -368,6 +387,16 @@ def _register_session_report_handler(ctx: agents.JobContext, call_context: CallC
             await _post_session_report(call_context.call_id or "", payload)
 
         asyncio.create_task(send_later())
+
+    async def on_shutdown():
+        nonlocal posted
+        if not posted and call_context.call_id:
+            posted = True
+            logger.info("Posting session report on job shutdown for %s", call_context.call_id)
+            payload = _session_report_payload(session, ctx, call_context)
+            await _post_session_report(call_context.call_id, payload)
+
+    ctx.add_shutdown_callback(on_shutdown)
 
 
 def _sip_failure_reason(
@@ -652,7 +681,7 @@ def _call_context_prompt(call_context: CallContext) -> str:
         lines.append(
             "- This is an outbound call placed by LSA Office. The customer or lead did not call us in this session. "
             "Do not speak before the callee answers or before they speak first. On your first response after they speak, "
-            "introduce yourself as Kavya from LSA Office, and explain the reason/purpose of the call in simple, polite, spoken Hindi/Hinglish. "
+            f"introduce yourself as {agent_config.get('support_agent', {}).get('name', 'Nandini')} from LSA Office, and explain the reason/purpose of the call in simple, polite, spoken Hindi/Hinglish. "
             "Use the call purpose above as the reason when it is present; do not invent a different reason. "
             "Do NOT state the call purpose verbatim; instead, interpret and simplify it so it sounds natural and conversational to the customer. "
             "If they remain silent, you will be prompted to speak first."

@@ -252,7 +252,6 @@ class StandaloneAgent(Agent):
         super().__init__(
             instructions=instructions,
             tools=tools,
-            turn_detection=None,
         )
 
 async def entrypoint(ctx: agents.JobContext):
@@ -371,15 +370,12 @@ async def entrypoint(ctx: agents.JobContext):
         if is_sheet_campaign:
             current_date_str = now_ist.strftime("%d/%m/%Y")
             prompt_base += (
-                f"\n\n--- CAMPAIGN RULES: GST DOCUMENT COLLECTION & FOLLOW-UP ---\n"
-                f"- This call is for GST document collection follow-up. "
-                f"Do NOT attempt to collect document details directly, and do NOT ask for OTP or WhatsApp verification.\n"
-                f"- Inform the customer that LSA Office requires their GST documents for the filing period.\n"
-                f"- If the customer speaks another language, switch to that language and continue this call. Do not treat language preference as not ready.\n"
-                f"- If the customer is not ready yet and does not need human help, ask whether they want an AI call later. Use `schedule_ai_followup` only after they give or accept a specific date/time and confirm it.\n"
-                f"- If the customer says they need help, have a blocker, want support, or prefer a person, use `schedule_human_callback` only after they give or accept a specific date/time and confirm it. This stops AI follow-ups until a human resolves it.\n"
-                f"- The current date is {current_date_str}. Convert relative dates like 'tomorrow' or 'today evening' to actual dates (DD/MM/YYYY) before calling a scheduling tool.\n"
-                f"- After scheduling either AI follow-up or human help, thank them politely in simple Hindi/Hinglish, then end the call using the `end_call` tool."
+                f"\n\n--- CAMPAIGN RULES: DOCUMENT COLLECTION & FOLLOW-UP ---\n"
+                f"- Ask the customer if their documents are ready.\n"
+                f"- If they are ready, ask when they will send them. Once they provide a date or date and time, thank them politely and hang up using the `end_call` tool. Do NOT schedule any follow-up or human callback in this case.\n"
+                f"- If they are not ready, or if they mention any blocker or need help, ask them what specific help/query they have. Collect their query, ask when they would be free for a callback from a human expert, schedule a human callback using `schedule_human_callback` with the callback time and the query in notes, and then hang up using `end_call`.\n"
+                f"- Never ask the customer if they want an AI call or human call. Never mention these options.\n"
+                f"- The current date is {current_date_str}. Convert relative dates like 'tomorrow' to actual dates (DD/MM/YYYY) for scheduling.\n"
             )
 
         prompt_base += f"\n\n{_call_context_prompt(call_context)}"
@@ -464,7 +460,7 @@ async def entrypoint(ctx: agents.JobContext):
             api_key=ai_api_key,
             instructions=system_prompt,
         )
-        session = AgentSession(llm=realtime_llm, user_away_timeout=10.0)
+        session = AgentSession(llm=realtime_llm)
     elif provider == "OpenAI":
         custom_tts_enabled = agent_config.get("custom_tts", False)
         custom_tts_voice = agent_config.get("custom_tts_voice", "Aoede")
@@ -481,14 +477,14 @@ async def entrypoint(ctx: agents.JobContext):
                 api_key=google_api_key,
                 voice_name=custom_tts_voice,
             )
-            session = AgentSession(llm=realtime_llm, tts=custom_tts, user_away_timeout=10.0)
+            session = AgentSession(llm=realtime_llm, tts=custom_tts)
         else:
             realtime_llm = openai.realtime.RealtimeModel(
                 model=model,
                 voice=voice.lower() if voice else "alloy",
                 api_key=ai_api_key,
             )
-            session = AgentSession(llm=realtime_llm, user_away_timeout=10.0)
+            session = AgentSession(llm=realtime_llm)
     else:
         raise ValueError(f"Unsupported provider: {provider}")
     fnc_ctx.session = session
@@ -540,34 +536,36 @@ async def entrypoint(ctx: agents.JobContext):
     is_agent_speaking = False
     has_started_speaking = False
     silence_trigger_task = None
+    # ponytail: gate the timer so it never counts ringing time on outbound calls
+    first_activity_event = asyncio.Event()
 
     def reset_activity():
         nonlocal last_activity_time
         last_activity_time = asyncio.get_event_loop().time()
+        # ponytail: do NOT set first_activity_event here — away/state-change events
+        # would falsely signal activity. Only real speaking/transcript events do that.
 
     @session.on("user_state_changed")
     def on_user_state_changed(ev):
         nonlocal is_user_speaking, has_started_speaking
-        reset_activity()
         if ev.new_state == "speaking":
             is_user_speaking = True
             has_started_speaking = True
+            first_activity_event.set()  # real audio from callee
+            reset_activity()
             if silence_trigger_task and not silence_trigger_task.done():
                 silence_trigger_task.cancel()
         else:
             is_user_speaking = False
-        
-        if ev.new_state == "away":
-            logger.info("Inactivity timeout (away): ending call.")
-            session.shutdown()
 
     @session.on("agent_state_changed")
     def on_agent_state_changed(ev):
         nonlocal is_agent_speaking, has_started_speaking
-        reset_activity()
         if ev.new_state == "speaking":
             is_agent_speaking = True
             has_started_speaking = True
+            first_activity_event.set()  # agent started speaking — call is live
+            reset_activity()
             if silence_trigger_task and not silence_trigger_task.done():
                 silence_trigger_task.cancel()
         else:
@@ -577,6 +575,7 @@ async def entrypoint(ctx: agents.JobContext):
     def on_user_input(ev):
         nonlocal has_started_speaking
         has_started_speaking = True
+        first_activity_event.set()
         if silence_trigger_task and not silence_trigger_task.done():
             silence_trigger_task.cancel()
         reset_activity()
@@ -585,13 +584,19 @@ async def entrypoint(ctx: agents.JobContext):
     def on_item_added(ev):
         nonlocal has_started_speaking
         has_started_speaking = True
+        first_activity_event.set()
         if silence_trigger_task and not silence_trigger_task.done():
             silence_trigger_task.cancel()
         reset_activity()
 
     async def inactivity_monitor():
         try:
-            # Grace period for connection and initial greetings
+            if call_context.is_outbound:
+                # Don't count ringing time — wait until the callee actually picks up
+                # and audio starts flowing before we start the silence clock.
+                await first_activity_event.wait()
+                reset_activity()  # fresh baseline from first real audio
+            # Grace period after call connects
             await asyncio.sleep(10)
             while True:
                 await asyncio.sleep(1)
@@ -628,31 +633,14 @@ async def entrypoint(ctx: agents.JobContext):
                 logger.warning("Failed to perform final call status cleanup on session close: %s", err)
 
     # Greet user at startup
-    if "3.1" not in model and not call_context.is_outbound:
-        await asyncio.sleep(0.75)  # Wait for connection clicks/pops to settle
-        await session.generate_reply(
-            instructions=f"[System Note: Introduce yourself to the customer with this greeting: '{initial_greeting}']"
-        )
-    elif call_context.is_outbound:
+    if not call_context.is_outbound:
+        if "3.1" not in model:
+            await asyncio.sleep(0.75)  # Wait for connection clicks/pops to settle
+            await session.generate_reply(
+                instructions=f"[System Note: Introduce yourself to the customer with this greeting: '{initial_greeting}']"
+            )
+    else:
         logger.info("Outbound call: waiting for callee to speak first.")
-        # Start outbound silence monitor to speak first if caller is silent for 2.5 seconds
-        # ponytail: reduced silence timeout to 2.5s to respond faster if the customer is quiet
-        async def outbound_silence_trigger():
-            try:
-                await asyncio.sleep(2.5)
-                if not has_started_speaking and not is_user_speaking:
-                    logger.info("Outbound initial silence detected (2.5 seconds). Agent speaking first.")
-                    # Inject a system note to prompt the LLM to greet the user dynamically
-                    await session.generate_reply(
-                        instructions=(
-                            f"[System Note: The customer has answered but remained silent. "
-                            f"Initiate the call by greeting them dynamically and explaining the purpose: "
-                            f"'{call_context.call_purpose or ''}'. Keep it natural, polite, and simple in Hindi.]"
-                        )
-                    )
-            except asyncio.CancelledError:
-                pass
-        silence_trigger_task = asyncio.create_task(outbound_silence_trigger())
 
 
     # DTMF (keypad) Listener for OTP verification

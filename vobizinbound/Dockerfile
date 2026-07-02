@@ -1,7 +1,7 @@
 FROM python:3.12-alpine
 
 WORKDIR /app
-COPY server.py .
+COPY . .
 
 ENV PORT=8000
 EXPOSE 8000

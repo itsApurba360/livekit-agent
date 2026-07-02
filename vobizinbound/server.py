@@ -28,7 +28,7 @@ class Handler(BaseHTTPRequestHandler):
     def _get_xml(self, host):
         return f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Play>https://{host}/audio.wav</Play>
+  <Play>https://{host}/audio.mp3</Play>
 </Response>
 """.encode("utf-8")
 
@@ -41,6 +41,41 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if self.path == "/audio.wav":
+            file_to_serve = "audio_8k.wav" if os.path.exists("audio_8k.wav") else "audio.wav"
+            if os.path.exists(file_to_serve):
+                with open(file_to_serve, "rb") as f:
+                    body = f.read()
+                self._send_headers("audio/wav", len(body))
+                if self.command != "HEAD":
+                    self.wfile.write(body)
+            else:
+                body = b"Not Found"
+                self.send_response(404)
+                self.send_header("Content-Type", "text/plain")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                if self.command != "HEAD":
+                    self.wfile.write(body)
+            return
+
+        if self.path == "/audio.mp3":
+            if os.path.exists("audio.mp3"):
+                with open("audio.mp3", "rb") as f:
+                    body = f.read()
+                self._send_headers("audio/mpeg", len(body))
+                if self.command != "HEAD":
+                    self.wfile.write(body)
+            else:
+                body = b"Not Found"
+                self.send_response(404)
+                self.send_header("Content-Type", "text/plain")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                if self.command != "HEAD":
+                    self.wfile.write(body)
+            return
+
+        if self.path == "/audio_original.wav":
             if os.path.exists("audio.wav"):
                 with open("audio.wav", "rb") as f:
                     body = f.read()

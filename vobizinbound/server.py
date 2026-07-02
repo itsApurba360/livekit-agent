@@ -25,6 +25,14 @@ class Handler(BaseHTTPRequestHandler):
     def do_HEAD(self):
         self._send_headers("application/xml; charset=utf-8", len(VOBIZ_XML))
 
+    def do_OPTIONS(self):
+        self.send_response(200)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS, HEAD")
+        self.send_header("Access-Control-Allow-Headers", "*")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def _handle(self):
         if self.path == "/health":
             body = b"ok\n"
@@ -40,6 +48,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(content_length))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS, HEAD")
+        self.send_header("Access-Control-Allow-Headers", "*")
         self.end_headers()
 
     def log_message(self, fmt, *args):

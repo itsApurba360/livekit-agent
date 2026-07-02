@@ -15,9 +15,7 @@ class Handler(BaseHTTPRequestHandler):
         self._handle()
 
     def do_HEAD(self):
-        host = self.headers.get("Host", "localhost")
-        xml_content = self._get_xml(host)
-        self._send_headers("application/xml; charset=utf-8", len(xml_content))
+        self._handle()
 
     def do_OPTIONS(self):
         self.send_response(200)
@@ -38,7 +36,8 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/health":
             body = b"ok\n"
             self._send_headers("text/plain; charset=utf-8", len(body))
-            self.wfile.write(body)
+            if self.command != "HEAD":
+                self.wfile.write(body)
             return
 
         if self.path == "/audio.wav":
@@ -46,20 +45,23 @@ class Handler(BaseHTTPRequestHandler):
                 with open("audio.wav", "rb") as f:
                     body = f.read()
                 self._send_headers("audio/wav", len(body))
-                self.wfile.write(body)
+                if self.command != "HEAD":
+                    self.wfile.write(body)
             else:
                 body = b"Not Found"
                 self.send_response(404)
                 self.send_header("Content-Type", "text/plain")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
-                self.wfile.write(body)
+                if self.command != "HEAD":
+                    self.wfile.write(body)
             return
 
         host = self.headers.get("Host", "localhost")
         body = self._get_xml(host)
         self._send_headers("application/xml; charset=utf-8", len(body))
-        self.wfile.write(body)
+        if self.command != "HEAD":
+            self.wfile.write(body)
 
     def _send_headers(self, content_type, content_length):
         self.send_response(200)

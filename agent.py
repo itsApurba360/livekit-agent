@@ -332,7 +332,9 @@ async def entrypoint(ctx: agents.JobContext):
 
         prompt_base += (
             "\n\nLanguage rules:\n"
-            "- Start in simple Hindi/Hinglish. If the customer speaks another language, immediately switch to that language and keep using it until they ask to switch again.\n"
+            "- Start in simple Hinglish (everyday spoken Hindi mixed with common English words) or natural, easy spoken language. Avoid formal, robotic, or ancient vocabulary in all languages.\n"
+            "- Use modern English words for everyday terms rather than their formal translations (e.g., use 'papers' or 'documents' instead of 'दस्तावेज', 'callback' instead of 'पुनः कॉल', 'ready' instead of 'तैयार', 'time' instead of 'समय').\n"
+            "- If the customer speaks another language, immediately switch to that language and keep using it until they ask to switch again.\n"
             "- Do not schedule an AI follow-up or human callback because of language preference or language mismatch. You can continue the same call in the customer's language."
         )
 

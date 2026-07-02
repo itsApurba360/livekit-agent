@@ -744,7 +744,7 @@ class CustomerQueryTools(llm.ToolContext):
                     logger.warning(f"Error during custom end_call shutdown: {e}")
             
             asyncio.create_task(perform_shutdown())
-            return "Call is ending. Politely say goodbye to the user now in simple Hindi/Hinglish."
+            return "Call is ending. Politely say goodbye to the user now in natural, simple spoken language (e.g., 'Thank you, bye' or 'Theek hai, thank you')."
         elif session:
             async def perform_session_shutdown():
                 await _wait_for_end_call_speech(session)
@@ -755,7 +755,7 @@ class CustomerQueryTools(llm.ToolContext):
                     logger.warning(f"Error during session shutdown: {e}")
             
             asyncio.create_task(perform_session_shutdown())
-            return "Call is ending. Politely say goodbye to the user now in simple Hindi/Hinglish."
+            return "Call is ending. Politely say goodbye to the user now in natural, simple spoken language (e.g., 'Thank you, bye' or 'Theek hai, thank you')."
             
         return "Failed to end call: context not available."
 

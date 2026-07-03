@@ -240,7 +240,13 @@ Tests use Python's `unittest` framework despite `pytest` in dev dependencies. Ma
 The worker is deployed to LiveKit Cloud (which runs the Dockerfile with `uv run agent.py start` under the hood) using:
 
 ```bash
-lk agent deploy --project "360ithub" --region ap-south --yes
+lk agent deploy --project "project-360ithub-live" --region ap-south --yes
+```
+
+To update environment variables/secrets on the cloud agent without doing a code rebuild (avoiding running Docker locally):
+
+```bash
+lk agent update-secrets --id CA_PUFV6Djq5we3 --project "project-360ithub-live" --secrets-file ".env" --yes
 ```
 
 The worker connects outbound to LiveKit.

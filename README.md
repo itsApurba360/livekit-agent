@@ -211,5 +211,11 @@ For Dokploy details, see [docs/dokploy.md](docs/dokploy.md). For Hermes plugin w
 To deploy code updates to the LiveKit Cloud hosted worker, run:
 
 ```bash
-lk agent deploy --project "360ithub" --region ap-south --yes
+lk agent deploy --project "project-360ithub-live" --region ap-south --yes
+```
+
+To update environment variables/secrets on the cloud agent without doing a code rebuild:
+
+```bash
+lk agent update-secrets --id CA_PUFV6Djq5we3 --project "project-360ithub-live" --secrets-file ".env" --yes
 ```

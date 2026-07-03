@@ -478,7 +478,9 @@ async def entrypoint(ctx: agents.JobContext):
     agent_tools = list(fnc_ctx.function_tools.values())
     system_prompt = get_compiled_prompt(is_verified=fnc_ctx.is_verified)
 
-    # Start LiveKit Agent Session immediately to warm up connection
+    # Prepare the realtime session, but do not attach it to room audio until an
+    # outbound PSTN participant has answered. This keeps the worker ready for
+    # the API without listening to ringback/callertune early media.
     nc_option = None
     if agent_config.get("noise_cancellation", False):
         try:
@@ -489,6 +491,20 @@ async def entrypoint(ctx: agents.JobContext):
             logger.warning("Noise cancellation disabled; ai_coustics plugin unavailable: %s", err)
     
     agent_instance = StandaloneAgent(instructions=system_prompt, tools=agent_tools)
+    if call_context.call_id:
+        _safe_update_call_record(
+            call_context,
+            status="agent_ready",
+            event_message="Agent worker ready for outbound dial",
+        )
+
+    # For outbound PSTN, wait for the participant to join (callee answers the phone)
+    call_context = await _prepare_outbound_participant(ctx, call_context, config_dict)
+    if not call_context.ready:
+        return
+    phone_number = call_context.phone_number
+    fnc_ctx.phone_number = phone_number
+
     room_options_kwargs = {
         "audio_input": AudioInputOptions(
             noise_cancellation=nc_option,
@@ -499,26 +515,12 @@ async def entrypoint(ctx: agents.JobContext):
     if call_context.participant_identity:
         room_options_kwargs["participant_identity"] = call_context.participant_identity
 
-    logger.info("Starting AgentSession immediately to minimize pickup response latency.")
+    logger.info("Starting AgentSession after outbound participant is ready.")
     await session.start(
         room=ctx.room,
         agent=agent_instance,
         room_options=RoomOptions(**room_options_kwargs),
     )
-    if call_context.call_id:
-        _safe_update_call_record(
-            call_context,
-            status="agent_ready",
-            event_message="Agent realtime session ready",
-        )
-
-    # For outbound PSTN, wait for the participant to join (callee answers the phone)
-    # ponytail: now we wait for answer after starting session so we are already connected and ready
-    call_context = await _prepare_outbound_participant(ctx, call_context, config_dict)
-    if not call_context.ready:
-        return
-    phone_number = call_context.phone_number
-    fnc_ctx.phone_number = phone_number
     _register_call_status_handlers(ctx, call_context, session)
     _register_session_report_handler(ctx, call_context, session)
 

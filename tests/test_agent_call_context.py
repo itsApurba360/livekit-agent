@@ -215,6 +215,8 @@ class AgentCallContextTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Direction: outbound", prompt)
         self.assertIn("Callee phone number", prompt)
         self.assertIn("Do not speak before the callee answers or before they speak first", prompt)
+        self.assertIn("If you hear a voicemail or answering-machine greeting", prompt)
+        self.assertIn("then call the end_call tool", prompt)
 
     def test_outbound_prompt_includes_call_purpose_and_requester(self):
         call_context = agent.CallContext(

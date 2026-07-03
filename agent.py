@@ -478,9 +478,8 @@ async def entrypoint(ctx: agents.JobContext):
     agent_tools = list(fnc_ctx.function_tools.values())
     system_prompt = get_compiled_prompt(is_verified=fnc_ctx.is_verified)
 
-    # Prepare the realtime session, but do not attach it to room audio until an
-    # outbound PSTN participant has answered. This keeps the worker ready for
-    # the API without listening to ringback/callertune early media.
+    # Start the realtime session early, but keep outbound audio input detached
+    # until the PSTN participant has answered.
     nc_option = None
     if agent_config.get("noise_cancellation", False):
         try:
@@ -491,11 +490,30 @@ async def entrypoint(ctx: agents.JobContext):
             logger.warning("Noise cancellation disabled; ai_coustics plugin unavailable: %s", err)
     
     agent_instance = StandaloneAgent(instructions=system_prompt, tools=agent_tools)
+    audio_input_kwargs = {"noise_cancellation": nc_option}
+    if call_context.is_outbound:
+        audio_input_kwargs["pre_connect_audio"] = False
+    room_options_kwargs = {
+        "audio_input": AudioInputOptions(**audio_input_kwargs),
+        "close_on_disconnect": True,
+        "delete_room_on_close": True,
+    }
+    if call_context.participant_identity:
+        room_options_kwargs["participant_identity"] = call_context.participant_identity
+
+    logger.info("Starting AgentSession.")
+    await session.start(
+        room=ctx.room,
+        agent=agent_instance,
+        room_options=RoomOptions(**room_options_kwargs),
+    )
+    if call_context.is_outbound:
+        session.input.set_audio_enabled(False)
     if call_context.call_id:
         _safe_update_call_record(
             call_context,
             status="agent_ready",
-            event_message="Agent worker ready for outbound dial",
+            event_message="Agent realtime session ready",
         )
 
     # For outbound PSTN, wait for the participant to join (callee answers the phone)
@@ -504,25 +522,12 @@ async def entrypoint(ctx: agents.JobContext):
         return
     phone_number = call_context.phone_number
     fnc_ctx.phone_number = phone_number
-
-    room_options_kwargs = {
-        "audio_input": AudioInputOptions(
-            noise_cancellation=nc_option,
-        ),
-        "close_on_disconnect": True,
-        "delete_room_on_close": True,
-    }
-    if call_context.participant_identity:
-        room_options_kwargs["participant_identity"] = call_context.participant_identity
-
-    logger.info("Starting AgentSession after outbound participant is ready.")
-    await session.start(
-        room=ctx.room,
-        agent=agent_instance,
-        room_options=RoomOptions(**room_options_kwargs),
-    )
     _register_call_status_handlers(ctx, call_context, session)
     _register_session_report_handler(ctx, call_context, session)
+    if call_context.is_outbound:
+        if session.room_io and call_context.participant_identity:
+            session.room_io.set_participant(call_context.participant_identity)
+        session.input.set_audio_enabled(True)
 
     # Robust inactivity tracking (10 seconds silence timeout)
     last_activity_time = asyncio.get_event_loop().time()

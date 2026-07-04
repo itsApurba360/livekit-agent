@@ -74,6 +74,8 @@ def _format_schedule(dt: datetime) -> tuple[str, str]:
     return dt.strftime("%d/%m/%Y"), dt.strftime("%H:%M")
 
 def _next_retry_datetime(reason: str | None, now: datetime) -> datetime:
+    if reason in {"agent_ready_timeout", "dispatch_error"}:
+        return now + timedelta(minutes=10)
     if reason == "busy":
         return now + timedelta(hours=1)
     if reason in {"no_answer", "unreachable"}:

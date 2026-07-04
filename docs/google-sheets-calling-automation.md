@@ -93,16 +93,11 @@ Sheet 1 also controls future dialing. The automation skips rows when `AI Enabled
 
 ## Running locally
 
-Start the worker and Call API first:
+The Call API is run locally and dispatches to the hosted cloud worker:
 
 ```bash
 set -a && source .env && set +a
-LIVEKIT_AGENT_NAME=outbound-caller-local uv run agent.py start
-```
-
-```bash
-set -a && source .env && set +a
-LIVEKIT_AGENT_NAME=outbound-caller-local uv run uvicorn call_api:app --host 127.0.0.1 --port 8000
+LIVEKIT_AGENT_NAME=outbound-caller-prod .venv/bin/python -m uvicorn call_api:app --host 127.0.0.1 --port 8000
 ```
 
 Then either run a single automation cycle:

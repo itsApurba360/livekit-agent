@@ -32,13 +32,9 @@ The Call API persists call records through `call_status_store.py`. Set `CALL_API
 
 ## Worker dispatch names
 
-Use distinct worker names so LiveKit dispatch does not route jobs to the wrong environment:
+Use the production LiveKit Cloud worker dispatch name:
 
-- `outbound-caller-local` — local testing
-- `outbound-caller-dokploy` — Dokploy testing/staging
 - `outbound-caller-prod` — production LiveKit Cloud worker
-
-Do not run two workers with the same `LIVEKIT_AGENT_NAME` in the same LiveKit project.
 
 ## Local setup
 
@@ -49,7 +45,7 @@ CALL_API_TOKEN=<openssl rand -hex 32>
 CALL_API_ALLOWED_COUNTRY_PREFIXES=+91
 CALL_API_DEFAULT_COUNTRY_CODE=+91
 OUTBOUND_TRUNK_ID=ST_xxxxxxxxxxxxxxxxx
-LIVEKIT_AGENT_NAME=outbound-caller-local
+LIVEKIT_AGENT_NAME=outbound-caller-prod
 LIVEKIT_CALL_API_URL=http://127.0.0.1:8000
 LIVEKIT_CALL_API_TOKEN=<same as CALL_API_TOKEN>
 # For shared API/worker status storage in Dokploy/LiveKit Cloud:

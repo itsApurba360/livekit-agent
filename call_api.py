@@ -28,9 +28,14 @@ from livekit import api
 from pydantic import BaseModel, Field, field_validator
 from vobiz_client import VobizRestClient, find_recording_for_call
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
 load_dotenv()
 
 AGENT_NAME = os.environ.get("LIVEKIT_AGENT_NAME") or os.environ.get("AGENT_NAME") or "outbound-caller"
+
 
 app = FastAPI(title="LiveKit Call Control API", version="0.1.0")
 
@@ -394,8 +399,8 @@ async def _delete_room_quietly(room_name: str) -> None:
         pass
 
 
-async def _wait_for_agent_to_join(room_name: str, timeout_seconds: float = 10.0) -> bool:
-    # ponytail: wait for agent to prevent races, fallback to dial if timeout
+async def _wait_for_agent_to_join(room_name: str, timeout_seconds: float = 30.0) -> bool:
+    # ponytail: wait for agent to prevent races, fallback to dial if timeout (increased from 10.0 to 30.0 for cold starts)
     start_time = asyncio.get_event_loop().time()
     logger.info(f"Waiting for agent to join room {room_name} (timeout: {timeout_seconds}s)")
     while asyncio.get_event_loop().time() - start_time < timeout_seconds:
@@ -417,7 +422,8 @@ async def _wait_for_agent_to_join(room_name: str, timeout_seconds: float = 10.0)
     return False
 
 
-async def _wait_for_agent_ready(call_id: str, timeout_seconds: float = 30.0) -> bool:
+async def _wait_for_agent_ready(call_id: str, timeout_seconds: float = 60.0) -> bool:
+    # ponytail: wait for agent realtime session to be ready (increased from 30.0 to 60.0)
     start_time = asyncio.get_event_loop().time()
     logger.info("Waiting for agent realtime session to be ready for call %s", call_id)
     while asyncio.get_event_loop().time() - start_time < timeout_seconds:
@@ -623,7 +629,7 @@ def agent_status(authorization: Optional[str] = Header(default=None)) -> dict[st
     }
 
 
-async def _run_sheets_automation_wrapper():
+async def _run_sheets_automation_wrapper(ignore_schedule: bool = False):
     if os.path.exists("agent_stop.flag"):
         try:
             os.remove("agent_stop.flag")
@@ -639,7 +645,7 @@ async def _run_sheets_automation_wrapper():
         
         while not os.path.exists("agent_stop.flag"):
             try:
-                await run_sheets_automation()
+                await run_sheets_automation(ignore_schedule=ignore_schedule)
             except Exception as loop_err:
                 logger.error(f"Error in sheets automation loop cycle: {loop_err}")
                 
@@ -661,12 +667,16 @@ async def _run_sheets_automation_wrapper():
 
 
 @app.post("/agent/start")
-async def start_agent(background_tasks: BackgroundTasks, authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+async def start_agent(
+    background_tasks: BackgroundTasks,
+    ignore_schedule: bool = Query(default=False),
+    authorization: Optional[str] = Header(default=None)
+) -> dict[str, Any]:
     _require_auth(authorization)
     if os.path.exists("agent_running.flag") or len(get_active_calls()) > 0:
         return {"ok": False, "message": "Agent is already running"}
     
-    background_tasks.add_task(_run_sheets_automation_wrapper)
+    background_tasks.add_task(_run_sheets_automation_wrapper, ignore_schedule)
     return {"ok": True, "message": "Agent started successfully"}
 
 

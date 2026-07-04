@@ -20,14 +20,9 @@ if [ ! -d "$VENV_BIN" ]; then
   exit 1
 fi
 
-CMD=${1:-agent}
+CMD=${1:-api}
 
 case "$CMD" in
-  agent)
-    [ $# -gt 0 ] && shift
-    echo "Starting agent worker..."
-    exec "$VENV_BIN/python" agent.py start "$@"
-    ;;
   api)
     [ $# -gt 0 ] && shift
     echo "Starting call-control API on port 8000..."
@@ -44,7 +39,7 @@ case "$CMD" in
     exec "$VENV_BIN/python" -m unittest discover -s tests "$@"
     ;;
   *)
-    echo "Usage: $0 {agent|api|web|test} [args...]"
+    echo "Usage: $0 {api|web|test} [args...]"
     exit 1
     ;;
 esac

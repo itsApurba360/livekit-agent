@@ -113,7 +113,7 @@ def run():
         print(f"Static files served from: {STATIC_DIR}")
         print(f"Using LiveKit URL: {os.environ.get('LIVEKIT_URL')}")
         print(f"\n💡 Instructions to test:")
-        print(f"1. Make sure your local agent is running: uv run agent.py start")
+        print(f"1. Make sure your agent is deployed to LiveKit Cloud (lk agent deploy)")
         print(f"2. Open http://localhost:{PORT} in your browser")
         print(f"3. Select a profile (Customer or Lead) and click 'Connect'")
         print(f"==================================================\n")

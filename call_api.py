@@ -491,6 +491,7 @@ async def create_call(
             call_id,
             status="dispatch_failed",
             reason="agent_ready_timeout",
+            error="Agent realtime session did not become ready before dialing; check worker/provider logs.",
             event_message="LiveKit agent did not become ready before dialing",
         )
         await _delete_room_quietly(room_name)

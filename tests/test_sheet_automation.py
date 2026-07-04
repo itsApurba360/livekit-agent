@@ -6,7 +6,7 @@ from gspread.utils import a1_to_rowcol
 
 # Import components to test
 from agent_tools import CALLBACK_HOLIDAYS_2026, CustomerQueryTools, _wait_for_end_call_speech
-from sheet_calling_automation import _int_value, parse_schedule, sync_completed_calls_to_sheets
+from sheet_calling_automation import _int_value, parse_schedule, sync_completed_calls_to_sheets, trigger_outbound_call
 from agent import CallContext, _call_context_prompt
 
 
@@ -117,6 +117,67 @@ class TestSheetAutomation(unittest.TestCase):
         self.assertEqual(_int_value("0", 3), 0)
         self.assertEqual(_int_value("", 3), 3)
         self.assertEqual(_int_value(None, 3), 3)
+
+    def test_trigger_outbound_call_passes_language_when_present(self):
+        posted_payloads = []
+
+        class FakeResponse:
+            status_code = 200
+
+            def json(self):
+                return {"call_id": "call_123"}
+
+        class FakeAsyncClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            async def post(self, _url, json, **_kwargs):
+                posted_payloads.append(json)
+                return FakeResponse()
+
+        row = {
+            "CID": "CUST01",
+            "Mobile Number": "9876543210",
+            "Purpose/Prompt": "GST filing documents collection",
+            "Owner name": "Pankaj",
+            "Company Name": "LSA",
+            "Language": "Kannada",
+        }
+
+        with patch("httpx.AsyncClient", return_value=FakeAsyncClient()):
+            self.assertTrue(asyncio_run(trigger_outbound_call(row)))
+
+        self.assertEqual(posted_payloads[0]["metadata"]["preferred_language"], "Kannada")
+
+    def test_trigger_outbound_call_omits_blank_language(self):
+        posted_payloads = []
+
+        class FakeResponse:
+            status_code = 200
+
+            def json(self):
+                return {"call_id": "call_123"}
+
+        class FakeAsyncClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            async def post(self, _url, json, **_kwargs):
+                posted_payloads.append(json)
+                return FakeResponse()
+
+        row = {"CID": "CUST01", "Mobile Number": "9876543210", "Language": ""}
+
+        with patch("httpx.AsyncClient", return_value=FakeAsyncClient()):
+            self.assertTrue(asyncio_run(trigger_outbound_call(row)))
+
+        self.assertNotIn("preferred_language", posted_payloads[0]["metadata"])
 
     def test_lsa_2026_holiday_list_extracted(self):
         self.assertEqual(len(CALLBACK_HOLIDAYS_2026), 72)
@@ -311,6 +372,51 @@ class TestSheetAutomation(unittest.TestCase):
         self.assertEqual(updated["AI Enabled"], "Yes")
         self.assertEqual(updated["Last Call Outcome"], "busy")
         self.assertEqual(updated["AI Attempt Count"], 1)
+        self.assertTrue(updated["Next AI Call Date"])
+        self.assertTrue(updated["Next AI Call Time"])
+        mock_update.assert_called_once()
+
+    @patch("sheet_calling_automation.check_stop_requested", return_value=False)
+    @patch("call_status_store.update_call_record")
+    @patch("call_status_store.list_completed_call_records")
+    def test_agent_ready_timeout_does_not_increment_attempt_count(self, mock_list, mock_update, _mock_stop):
+        mock_list.return_value = [{
+            "call_id": "call_123",
+            "status": "dispatch_failed",
+            "reason": "agent_ready_timeout",
+            "metadata": {"cid": "CUST01", "source": "sheets_automation"},
+            "created_at": "2026-06-30T10:00:00+00:00",
+        }]
+        sheet1_headers = [
+            "CID", "Data Received Status", "Last Comment", "Count",
+            "Workflow Status", "AI Enabled", "Last Call Outcome",
+            "Next AI Call Date", "Next AI Call Time", "AI Attempt Count",
+            "Max AI Attempts",
+        ]
+        sheet1 = FakeWorksheet(sheet1_headers, [{
+            "CID": "CUST01",
+            "Data Received Status": "Pending",
+            "Count": 2,
+            "AI Attempt Count": 1,
+            "Max AI Attempts": 3,
+        }])
+        sheet2 = FakeWorksheet([
+            "Client Comment", "Next Action", "Next Action Date (DD/MMYYYY)",
+            "Next Action Time (IST)", "CID", "Datetime", "Recording",
+            "Trasncript", "Actor", "Call ID", "Call Outcome",
+            "Help Needed Notes", "Assigned To",
+        ])
+
+        sync_completed_calls_to_sheets(FakeSpreadsheet(sheet1, sheet2))
+
+        self.assertIn("System error before dialing", sheet2.appended_rows[0][0])
+        self.assertEqual(sheet2.appended_rows[0][1], "AI Call")
+        self.assertEqual(sheet2.appended_rows[0][10], "dispatch_failed")
+        updated = sheet1.updated_by_header()
+        self.assertEqual(updated["Count"], 2)
+        self.assertEqual(updated["AI Attempt Count"], 1)
+        self.assertEqual(updated["Last Call Outcome"], "agent_ready_timeout")
+        self.assertEqual(updated["Workflow Status"], "AI Scheduled")
         self.assertTrue(updated["Next AI Call Date"])
         self.assertTrue(updated["Next AI Call Time"])
         mock_update.assert_called_once()

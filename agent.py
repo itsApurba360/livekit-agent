@@ -46,6 +46,7 @@ call_context_helpers.set_agent_config(agent_config)
 DEFAULT_TRANSFER_NUMBER = os.environ.get("DEFAULT_TRANSFER_NUMBER")
 SIP_DOMAIN = os.environ.get("VOBIZ_SIP_DOMAIN")
 AGENT_NAME = os.environ.get("LIVEKIT_AGENT_NAME") or os.environ.get("AGENT_NAME") or "outbound-caller"
+SILENCE_TIMEOUT_SECONDS = 30.0
 
 DEFAULT_SUPPORT_UNVERIFIED_RULES = """- Customer lookup, WhatsApp, PDF, and OTP verification tools are disabled for now.
 - Do not ask for OTP or WhatsApp verification.
@@ -337,6 +338,12 @@ async def entrypoint(ctx: agents.JobContext):
             "- If the customer speaks another language, immediately switch to that language and keep using it until they ask to switch again.\n"
             "- Do not schedule an AI follow-up or human callback because of language preference or language mismatch. You can continue the same call in the customer's language."
         )
+        preferred_language = str(config_dict.get("preferred_language") or "").strip()
+        if preferred_language:
+            prompt_base += (
+                f"\n- The campaign sheet says the customer's preferred language is {preferred_language}. "
+                "Start the conversation in that language. If the customer responds in another language, switch to the customer's language."
+            )
 
         from datetime import datetime, timedelta, timezone
         now_ist = datetime.now(timezone(timedelta(hours=5, minutes=30)))
@@ -439,6 +446,7 @@ async def entrypoint(ctx: agents.JobContext):
 
     # Initialize Realtime AI models
     logger.info(f"Initializing Standalone Agent Session ({provider} - Model: {model}, Voice: {voice})")
+    session_options = {"user_away_timeout": SILENCE_TIMEOUT_SECONDS}
     if provider == "Google":
         realtime_llm = google.realtime.RealtimeModel(
             model=model,
@@ -446,7 +454,7 @@ async def entrypoint(ctx: agents.JobContext):
             api_key=ai_api_key,
             instructions=system_prompt,
         )
-        session = AgentSession(llm=realtime_llm)
+        session = AgentSession(llm=realtime_llm, **session_options)
     elif provider == "OpenAI":
         custom_tts_enabled = agent_config.get("custom_tts", False)
         custom_tts_voice = agent_config.get("custom_tts_voice", "Aoede")
@@ -463,14 +471,14 @@ async def entrypoint(ctx: agents.JobContext):
                 api_key=google_api_key,
                 voice_name=custom_tts_voice,
             )
-            session = AgentSession(llm=realtime_llm, tts=custom_tts)
+            session = AgentSession(llm=realtime_llm, tts=custom_tts, **session_options)
         else:
             realtime_llm = openai.realtime.RealtimeModel(
                 model=model,
                 voice=voice.lower() if voice else "alloy",
                 api_key=ai_api_key,
             )
-            session = AgentSession(llm=realtime_llm)
+            session = AgentSession(llm=realtime_llm, **session_options)
     else:
         raise ValueError(f"Unsupported provider: {provider}")
     fnc_ctx.session = session
@@ -529,93 +537,14 @@ async def entrypoint(ctx: agents.JobContext):
             session.room_io.set_participant(call_context.participant_identity)
         session.input.set_audio_enabled(True)
 
-    # Robust inactivity tracking (10 seconds silence timeout)
-    last_activity_time = asyncio.get_event_loop().time()
-    is_user_speaking = False
-    is_agent_speaking = False
-    has_started_speaking = False
-    silence_trigger_task = None
-    # ponytail: gate the timer so it never counts ringing time on outbound calls
-    first_activity_event = asyncio.Event()
-
-    def reset_activity():
-        nonlocal last_activity_time
-        last_activity_time = asyncio.get_event_loop().time()
-        # ponytail: do NOT set first_activity_event here — away/state-change events
-        # would falsely signal activity. Only real speaking/transcript events do that.
-
     @session.on("user_state_changed")
     def on_user_state_changed(ev):
-        nonlocal is_user_speaking, has_started_speaking
-        if ev.new_state == "speaking":
-            is_user_speaking = True
-            has_started_speaking = True
-            first_activity_event.set()  # real audio from callee
-            reset_activity()
-            if silence_trigger_task and not silence_trigger_task.done():
-                silence_trigger_task.cancel()
-        else:
-            is_user_speaking = False
-
-    @session.on("agent_state_changed")
-    def on_agent_state_changed(ev):
-        nonlocal is_agent_speaking, has_started_speaking
-        if ev.new_state == "speaking":
-            is_agent_speaking = True
-            has_started_speaking = True
-            first_activity_event.set()  # agent started speaking — call is live
-            reset_activity()
-            if silence_trigger_task and not silence_trigger_task.done():
-                silence_trigger_task.cancel()
-        else:
-            is_agent_speaking = False
-
-    @session.on("user_input_transcribed")
-    def on_user_input(ev):
-        nonlocal has_started_speaking
-        has_started_speaking = True
-        first_activity_event.set()
-        if silence_trigger_task and not silence_trigger_task.done():
-            silence_trigger_task.cancel()
-        reset_activity()
-
-    @session.on("conversation_item_added")
-    def on_item_added(ev):
-        nonlocal has_started_speaking
-        has_started_speaking = True
-        first_activity_event.set()
-        if silence_trigger_task and not silence_trigger_task.done():
-            silence_trigger_task.cancel()
-        reset_activity()
-
-    async def inactivity_monitor():
-        try:
-            if call_context.is_outbound:
-                # Don't count ringing time — wait until the callee actually picks up
-                # and audio starts flowing before we start the silence clock.
-                await first_activity_event.wait()
-                reset_activity()  # fresh baseline from first real audio
-            # Grace period after call connects
-            await asyncio.sleep(10)
-            while True:
-                await asyncio.sleep(1)
-                if is_user_speaking or is_agent_speaking:
-                    reset_activity()
-                    continue
-                elapsed = asyncio.get_event_loop().time() - last_activity_time
-                if elapsed > 10.0:
-                    logger.info(f"Silence timeout: no activity for {elapsed:.1f}s. Ending call.")
-                    session.shutdown()
-                    break
-        except asyncio.CancelledError:
-            pass
-
-    monitor_task = asyncio.create_task(inactivity_monitor())
+        if ev.new_state == "away":
+            logger.info("LiveKit user-away timeout reached after %.0fs. Ending call.", SILENCE_TIMEOUT_SECONDS)
+            session.shutdown()
 
     @session.on("close")
     def on_close(ev):
-        if monitor_task:
-            monitor_task.cancel()
         if call_context.call_id:
             try:
                 record = get_call_record(call_context.call_id)

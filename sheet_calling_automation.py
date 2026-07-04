@@ -152,6 +152,9 @@ async def trigger_outbound_call(row: dict) -> bool:
             "source": "sheets_automation"
         }
     }
+    language = str(row.get("Language") or "").strip()
+    if language:
+        payload["metadata"]["preferred_language"] = language
     
     headers = {
         "Authorization": f"Bearer {call_api_token}",
@@ -217,6 +220,10 @@ def sync_completed_calls_to_sheets(sheet):
         
         status = str(c.get("status") or "")
         reason = c.get("reason") or ""
+        system_failure_no_attempt = status == "dispatch_failed" and reason in {
+            "agent_ready_timeout",
+            "dispatch_error",
+        }
         matching_row_index = -1
         current_count = 0
         current_ai_attempt_count = 0
@@ -233,22 +240,28 @@ def sync_completed_calls_to_sheets(sheet):
                 current_assignee = str(r.get("Assigned To") or "")
                 break
 
-        ai_attempt_count = current_ai_attempt_count + 1
+        ai_attempt_count = current_ai_attempt_count if system_failure_no_attempt else current_ai_attempt_count + 1
         next_action = str(c["parsed_metadata"].get("next_action") or "").strip()
         next_action_date = c["parsed_metadata"].get("next_action_date", "")
         next_action_time = c["parsed_metadata"].get("next_action_time", "")
         client_comment = c["parsed_metadata"].get("client_comment", "")
         help_needed_notes = c["parsed_metadata"].get("help_needed_notes", "")
+        internal_error = str(c.get("error") or "").strip()
         
         # Fallback text if call failed without speaking
-        if not client_comment and status.startswith("failed"):
+        if not client_comment and system_failure_no_attempt:
+            detail = internal_error or reason or status
+            client_comment = f"System error before dialing: {detail}. No customer call attempt counted."
+        elif not client_comment and status.startswith("failed"):
             client_comment = f"Call failed: {reason or 'unknown reason'}"
         elif not client_comment:
             client_comment = "Call completed."
 
         retryable_failure = status in {"failed_busy", "failed_no_answer", "failed_unreachable"}
         if not next_action:
-            if retryable_failure and ai_attempt_count < max_attempts:
+            if system_failure_no_attempt:
+                next_action = "AI Call"
+            elif retryable_failure and ai_attempt_count < max_attempts:
                 next_action = "AI Call"
             elif status.startswith("failed") and ai_attempt_count >= max_attempts:
                 next_action = "Human"
@@ -260,7 +273,7 @@ def sync_completed_calls_to_sheets(sheet):
                 next_action = "AI Call"
 
         if next_action == "AI Call" and (not next_action_date or not next_action_time):
-            retry_at = _next_retry_datetime(reason if status.startswith("failed") else None, now)
+            retry_at = _next_retry_datetime(reason if status.startswith("failed") or system_failure_no_attempt else None, now)
             next_action_date, next_action_time = _format_schedule(retry_at)
 
         if _is_human_handoff(next_action):
@@ -308,7 +321,7 @@ def sync_completed_calls_to_sheets(sheet):
             if matching_row_index != -1:
                 updates = {
                     "Last Comment": client_comment,
-                    "Count": current_count + 1,
+                    "Count": current_count if system_failure_no_attempt else current_count + 1,
                     "AI Attempt Count": ai_attempt_count,
                     "Last Call Outcome": reason or status,
                     "Next AI Call Date": next_action_date if next_action == "AI Call" else "",

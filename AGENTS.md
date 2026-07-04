@@ -76,6 +76,13 @@ Paste `CALL_API_TOKEN`; the page fetches protected data from `GET /dashboard/dat
 
 ### Running Google Sheets Automation
 
+Use this when the campaign is driven from the Excel-like Google Sheet (`Master Sheet`) rather than by manually posting one `/calls` request.
+
+The sheet is the source of truth for who to call:
+
+- Sheet 1 / `Master Sheet`: client queue. Rows with `Data Received Status=Pending`, `AI Enabled=Yes`, and a dialable `Mobile Number` are eligible.
+- Sheet 2 / `Followups`: call log and next-action history. Completed calls are synced here with outcome, transcript, recording link, notes, and the next action.
+
 Preferred one-command runner for the hosted LiveKit Cloud worker:
 
 ```bash
@@ -83,6 +90,14 @@ Preferred one-command runner for the hosted LiveKit Cloud worker:
 ```
 
 This loads `.env`, defaults `GOOGLE_SHEETS_SPREADSHEET_ID` to `1_OXV6OAvrhgaSOnp03uJn8no8h3qTpk3g2lUX8CRnH4` when unset, starts `call_api.py` only if the API is not already healthy, sets `LIVEKIT_AGENT_NAME=outbound-caller-prod` by default, and posts `POST /agent/start`. It does **not** start a local `agent.py` worker.
+
+Operational flow from the sheet:
+
+1. Confirm `.env` has `GOOGLE_SHEETS_SPREADSHEET_ID`, `GOOGLE_SHEETS_CREDS_PATH`, `CALL_API_TOKEN`, LiveKit credentials, `OUTBOUND_TRUNK_ID`, and the shared Postgres URL.
+2. Run `./run_sheet_calls.sh`.
+3. The Call API stays local on `127.0.0.1:8000`, dispatches `outbound-caller-prod` on LiveKit Cloud, and dials through the configured SIP trunk.
+4. The loop scans pending `Master Sheet` rows, posts each eligible row to `/calls`, and avoids duplicates using active call status plus `CID`.
+5. After calls finish, sync writes the call outcome, transcript, recording proxy URL, comments, next action, and attempt counts back to `Followups` and `Master Sheet`.
 
 One cycle:
 

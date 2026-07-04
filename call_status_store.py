@@ -533,7 +533,7 @@ def list_completed_call_records() -> list[dict[str, Any]]:
             """
             SELECT *
             FROM calls
-            WHERE status IN ('completed', 'failed', 'failed_busy', 'failed_no_answer', 'failed_rejected', 'failed_unreachable', 'failed_trunk')
+            WHERE status IN ('completed', 'dispatch_failed', 'failed', 'failed_busy', 'failed_no_answer', 'failed_rejected', 'failed_unreachable', 'failed_trunk')
             ORDER BY created_at ASC
             """,
         ).fetchall()

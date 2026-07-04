@@ -342,7 +342,9 @@ async def entrypoint(ctx: agents.JobContext):
         if preferred_language:
             prompt_base += (
                 f"\n- The campaign sheet says the customer's preferred language is {preferred_language}. "
-                "Start the conversation in that language. If the customer responds in another language, switch to the customer's language."
+                f"Start the conversation in {preferred_language}. Specifically, translate your initial greeting template ('{initial_greeting_template}') into {preferred_language} and use that translation as your greeting on the user's first utterance. "
+                f"This overrides any other instruction telling you to say the greeting in Hindi/Hinglish. "
+                "If the customer responds in another language, switch to the customer's language."
             )
 
         from datetime import datetime, timedelta, timezone
@@ -564,8 +566,13 @@ async def entrypoint(ctx: agents.JobContext):
     if not call_context.is_outbound:
         if "3.1" not in model:
             await asyncio.sleep(0.75)  # Wait for connection clicks/pops to settle
+            preferred_language = str(config_dict.get("preferred_language") or "").strip()
+            if preferred_language:
+                instructions = f"[System Note: Introduce yourself to the customer with this greeting: '{initial_greeting}'. Since the preferred language is {preferred_language}, please translate this greeting into {preferred_language} and speak it.]"
+            else:
+                instructions = f"[System Note: Introduce yourself to the customer with this greeting: '{initial_greeting}']"
             await session.generate_reply(
-                instructions=f"[System Note: Introduce yourself to the customer with this greeting: '{initial_greeting}']"
+                instructions=instructions
             )
     else:
         logger.info("Outbound call: waiting for callee to speak first.")

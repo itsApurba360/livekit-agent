@@ -359,7 +359,7 @@ def sync_completed_calls_to_sheets(sheet):
             logger.error(f"Failed to sync call {call_id} to Google Sheets: {e}")
             break
 
-async def run_sheets_automation():
+async def run_sheets_automation(ignore_schedule: bool = False):
     """Main execution loop for Google Sheets automated dialing & log syncing."""
     logger.info("Starting Google Sheets Automation cycle...")
     
@@ -451,8 +451,8 @@ async def run_sheets_automation():
         
         if row_next_date and row_next_time:
             scheduled_time = parse_schedule(row_next_date, row_next_time)
-            if scheduled_time <= now:
-                logger.info(f"Client CID {cid} has Sheet 1 AI call due at {scheduled_time}. Triggering call.")
+            if ignore_schedule or scheduled_time <= now:
+                logger.info(f"Client CID {cid} has Sheet 1 AI call due at {scheduled_time} (or ignore_schedule=True). Triggering call.")
                 should_call = True
             else:
                 logger.info(f"Client CID {cid} has Sheet 1 AI call in future at {scheduled_time}. Skipping.")
@@ -469,8 +469,8 @@ async def run_sheets_automation():
                 
                 if next_action_date and next_action_time:
                     scheduled_time = parse_schedule(next_action_date, next_action_time)
-                    if scheduled_time <= now:
-                        logger.info(f"Client CID {cid} has scheduled AI Call due at {scheduled_time} (Current: {now}). Triggering call.")
+                    if ignore_schedule or scheduled_time <= now:
+                        logger.info(f"Client CID {cid} has scheduled AI Call due at {scheduled_time} (or ignore_schedule=True). Triggering call.")
                         should_call = True
                     else:
                         logger.info(f"Client CID {cid} has scheduled AI Call in future at {scheduled_time}. Skipping.")
@@ -497,4 +497,9 @@ async def run_sheets_automation():
     logger.info("Google Sheets Automation cycle finished.")
 
 if __name__ == "__main__":
-    asyncio.run(run_sheets_automation())
+    import argparse
+    parser = argparse.ArgumentParser(description="Google Sheets Calling Automation")
+    parser.add_argument("--ignore-schedule", action="store_true", help="Bypass date/time scheduling checks and place pending calls immediately.")
+    args = parser.parse_args()
+    
+    asyncio.run(run_sheets_automation(ignore_schedule=args.ignore_schedule))

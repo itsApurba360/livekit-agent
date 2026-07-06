@@ -166,7 +166,7 @@ async def trigger_outbound_call(row: dict) -> bool:
     import httpx
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.post(f"{call_api_url}/calls", json=payload, headers=headers, timeout=30.0)
+            response = await client.post(f"{call_api_url}/calls", json=payload, headers=headers, timeout=90.0)
             if response.status_code == 200:
                 res_data = response.json()
                 logger.info(f"Successfully triggered outbound call for {mobile}. Call ID: {res_data.get('call_id')}")
@@ -485,12 +485,12 @@ async def run_sheets_automation(ignore_schedule: bool = False):
                 logger.info(f"Client CID {cid} latest action is '{next_action}'. Skipping.")
                 
         if should_call:
-            # Check active calls in call_api to avoid duplicate calls
+            # Limit to single active call globally
             from call_api import get_active_calls
             active = get_active_calls()
-            if any(str(c.get("phone_number")) == str(row.get("Mobile Number")).strip() or c.get("metadata", {}).get("cid") == cid for c in active):
-                logger.info(f"Client CID {cid} already has an active call. Skipping duplicate dial.")
-                continue
+            if len(active) > 0:
+                logger.info("An active call is already in progress. Skipping further dials this cycle.")
+                break
                 
             success = await trigger_outbound_call(row)
             if success:

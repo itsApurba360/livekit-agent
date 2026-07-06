@@ -207,14 +207,14 @@ class AgentCallContextTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(call_context.call_purpose, "Follow up on ERPNext implementation enquiry")
         self.assertEqual(call_context.requested_by, "hermes")
 
-    def test_outbound_prompt_waits_for_callee_first(self):
+    def test_outbound_prompt_greets_callee_immediately(self):
         call_context = agent.CallContext(direction="outbound", phone_number="+919876543210")
 
         prompt = agent._call_context_prompt(call_context)
 
         self.assertIn("Direction: outbound", prompt)
         self.assertIn("Callee phone number", prompt)
-        self.assertIn("Do not speak before the callee answers or before they speak first", prompt)
+        self.assertIn("Greet the callee immediately when they answer the call", prompt)
         self.assertIn("If you hear a voicemail or answering-machine greeting", prompt)
         self.assertIn("then call the end_call tool", prompt)
 

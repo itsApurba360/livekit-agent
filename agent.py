@@ -585,19 +585,21 @@ async def entrypoint(ctx: agents.JobContext):
                 logger.warning("Failed to perform final call status cleanup on session close: %s", err)
 
     # Greet user at startup
-    if not call_context.is_outbound:
-        if "3.1" not in model:
-            await asyncio.sleep(0.75)  # Wait for connection clicks/pops to settle
-            preferred_language = str(config_dict.get("preferred_language") or "").strip()
-            if preferred_language:
-                instructions = f"[System Note: Introduce yourself to the customer with this greeting: '{initial_greeting}'. Since the preferred language is {preferred_language}, please translate this greeting into {preferred_language} and speak it.]"
-            else:
-                instructions = f"[System Note: Introduce yourself to the customer with this greeting: '{initial_greeting}']"
-            await session.generate_reply(
-                instructions=instructions
-            )
+    if "3.1" not in model:
+        await asyncio.sleep(0.75)  # Wait for connection clicks/pops to settle
+        preferred_language = str(config_dict.get("preferred_language") or "").strip()
+        if preferred_language:
+            instructions = f"[System Note: Introduce yourself to the customer with this greeting: '{initial_greeting}'. Since the preferred language is {preferred_language}, please translate this greeting into {preferred_language} and speak it.]"
+        else:
+            instructions = f"[System Note: Introduce yourself to the customer with this greeting: '{initial_greeting}']"
+        await session.generate_reply(
+            instructions=instructions
+        )
     else:
-        logger.info("Outbound call: waiting for callee to speak first.")
+        if call_context.is_outbound:
+            logger.info("Outbound call: model 3.1 Live does not support startup greeting via generate_reply. Waiting for callee to speak first.")
+        else:
+            logger.info("Inbound call: model 3.1 Live does not support startup greeting via generate_reply. Waiting for caller to speak first.")
 
 
     # DTMF (keypad) Listener for OTP verification

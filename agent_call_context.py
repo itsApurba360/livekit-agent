@@ -680,12 +680,10 @@ def _call_context_prompt(call_context: CallContext) -> str:
     if call_context.is_outbound:
         lines.append(
             "- This is an outbound call placed by LSA Office. The customer or lead did not call us in this session. "
-            "Do not speak before the callee answers or before they speak first. On your first response after they speak, "
-            f"introduce yourself as {agent_config.get('support_agent', {}).get('name', 'Nandini')} from LSA Office, and explain the reason/purpose of the call in simple, polite, spoken Hinglish (or natural conversational language). "
+            f"Greet the callee immediately when they answer the call. Introduce yourself as {agent_config.get('support_agent', {}).get('name', 'Nandini')} from LSA Office, and explain the reason/purpose of the call in simple, polite, spoken Hinglish (or natural conversational language). "
             "Use the call purpose above as the reason when it is present; do not invent a different reason. "
             "Do NOT state the call purpose verbatim; instead, interpret and simplify it so it sounds natural and conversational to the customer. "
-            "If you hear a voicemail or answering-machine greeting, wait for the greeting or beep to finish, leave one brief relevant message from LSA Office using the call purpose, do not ask questions, and then call the end_call tool. "
-            "If they remain silent, you will be prompted to speak first."
+            "If you hear a voicemail or answering-machine greeting, wait for the greeting or beep to finish, leave one brief relevant message from LSA Office using the call purpose, do not ask questions, and then call the end_call tool."
         )
     elif call_context.is_inbound:
         lines.append(

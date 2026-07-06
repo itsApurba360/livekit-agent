@@ -100,8 +100,15 @@ def get_google_sheets_client():
     
     if creds_json:
         import json
+        import base64
         try:
-            info = json.loads(creds_json)
+            # Check if it looks like Base64 (alphanumeric, +, /, =), otherwise parse as raw JSON
+            cleaned = creds_json.strip()
+            try:
+                decoded = base64.b64decode(cleaned, validate=True).decode('utf-8')
+                info = json.loads(decoded)
+            except Exception:
+                info = json.loads(cleaned)
             creds = Credentials.from_service_account_info(info, scopes=scopes)
         except Exception as e:
             raise ValueError(f"Failed to parse GOOGLE_SHEETS_CREDS_JSON environment variable: {e}")

@@ -450,13 +450,35 @@ async def entrypoint(ctx: agents.JobContext):
     logger.info(f"Initializing Standalone Agent Session ({provider} - Model: {model}, Voice: {voice})")
     session_options = {"user_away_timeout": SILENCE_TIMEOUT_SECONDS}
     if provider == "Google":
+        from google.genai import types
+        from livekit.agents import TurnHandlingOptions, inference
+
         realtime_llm = google.realtime.RealtimeModel(
             model=model,
             voice=voice,
             api_key=ai_api_key,
             instructions=system_prompt,
+            realtime_input_config=types.RealtimeInputConfig(
+                automatic_activity_detection=types.AutomaticActivityDetection(
+                    disabled=True,
+                ),
+            ),
+            thinking_config=types.ThinkingConfig(
+                thinking_level=types.ThinkingLevel.MINIMAL,
+                include_thoughts=False,
+            ),
         )
-        session = AgentSession(llm=realtime_llm, **session_options)
+        session = AgentSession(
+            llm=realtime_llm,
+            turn_handling=TurnHandlingOptions(
+                turn_detection=inference.TurnDetector(),
+                endpointing={
+                    "min_delay": 0.15,
+                    "max_delay": 0.4,
+                },
+            ),
+            **session_options
+        )
     elif provider == "OpenAI":
         custom_tts_enabled = agent_config.get("custom_tts", False)
         custom_tts_voice = agent_config.get("custom_tts_voice", "Aoede")

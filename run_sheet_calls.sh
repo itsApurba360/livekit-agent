@@ -36,11 +36,40 @@ fi
 export GOOGLE_SHEETS_SPREADSHEET_ID="$SPREADSHEET_ID"
 export LIVEKIT_AGENT_NAME="${LIVEKIT_AGENT_NAME:-outbound-caller-prod}"
 
+API_WAS_ALREADY_RUNNING=true
+API_PID=""
+TAIL_PID=""
+
+cleanup() {
+  echo ""
+  echo "Stopping sheets automation..."
+  curl -fsS -X POST "$API_URL/agent/kill" \
+    -H "Authorization: Bearer ${CALL_API_TOKEN}" \
+    -H "Content-Type: application/json" >/dev/null 2>&1 || true
+
+  if [ "$API_WAS_ALREADY_RUNNING" = "false" ] && [ -n "$API_PID" ]; then
+    echo "Stopping Call API (PID $API_PID)..."
+    kill "$API_PID" 2>/dev/null || true
+  fi
+
+  if [ -n "$TAIL_PID" ]; then
+    kill "$TAIL_PID" 2>/dev/null || true
+  fi
+  exit 0
+}
+
+# Trap signals for clean exit
+trap cleanup INT TERM HUP
+
 if curl -fsS "$API_URL/health" >/dev/null 2>&1; then
   echo "Call API already running at $API_URL"
 else
   echo "Starting Call API at http://${API_HOST}:${API_PORT} using worker ${LIVEKIT_AGENT_NAME}"
+  API_WAS_ALREADY_RUNNING=false
+  # Clear old log to start fresh
+  rm -f call_api.log
   nohup "$VENV_BIN/uvicorn" call_api:app --host "$API_HOST" --port "$API_PORT" > call_api.log 2>&1 &
+  API_PID=$!
 
   for _ in $(seq 1 30); do
     if curl -fsS "http://${API_HOST}:${API_PORT}/health" >/dev/null 2>&1; then
@@ -61,3 +90,13 @@ curl -fsS -X POST "$API_URL/agent/start" \
   -H "Content-Type: application/json"
 echo
 echo "Dashboard: $API_URL/dashboard"
+echo "Tailing call_api.log. Press Ctrl+C to stop..."
+echo
+
+# Touch log if it doesn't exist so tail doesn't fail
+touch call_api.log
+tail -f call_api.log &
+TAIL_PID=$!
+
+# Wait for tail process to keep the script running
+wait "$TAIL_PID"

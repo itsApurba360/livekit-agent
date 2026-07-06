@@ -88,17 +88,28 @@ def _is_human_handoff(next_action: str) -> bool:
 def get_google_sheets_client():
     creds_path = os.environ.get("GOOGLE_SHEETS_CREDS_PATH", ".google_sheets_creds.json")
     spreadsheet_id = os.environ.get("GOOGLE_SHEETS_SPREADSHEET_ID")
+    creds_json = os.environ.get("GOOGLE_SHEETS_CREDS_JSON")
     
     if not spreadsheet_id:
         raise ValueError("GOOGLE_SHEETS_SPREADSHEET_ID environment variable is missing")
-    if not os.path.exists(creds_path):
-        raise FileNotFoundError(f"Google credentials file not found at: {creds_path}")
         
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive"
     ]
-    creds = Credentials.from_service_account_file(creds_path, scopes=scopes)
+    
+    if creds_json:
+        import json
+        try:
+            info = json.loads(creds_json)
+            creds = Credentials.from_service_account_info(info, scopes=scopes)
+        except Exception as e:
+            raise ValueError(f"Failed to parse GOOGLE_SHEETS_CREDS_JSON environment variable: {e}")
+    else:
+        if not os.path.exists(creds_path):
+            raise FileNotFoundError(f"Google credentials file not found at: {creds_path} and GOOGLE_SHEETS_CREDS_JSON env var is not set")
+        creds = Credentials.from_service_account_file(creds_path, scopes=scopes)
+        
     client = gspread.authorize(creds)
     return client, spreadsheet_id
 

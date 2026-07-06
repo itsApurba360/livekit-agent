@@ -28,7 +28,7 @@ Add these to `.env` and run `uv sync` after pulling the new dependencies:
 ```env
 GOOGLE_SHEETS_SPREADSHEET_ID=<spreadsheet-id>
 GOOGLE_SHEETS_CREDS_PATH=.google_sheets_creds.json
-LIVEKIT_CALL_API_URL=http://127.0.0.1:8000
+LIVEKIT_CALL_API_URL=https://api.yourdomain.com
 CALL_API_TOKEN=<same token used by call_api.py>
 ```
 
@@ -91,23 +91,13 @@ The misspellings `DD/MMYYYY` and `Trasncript` are currently part of the sheet co
 
 Sheet 1 also controls future dialing. The automation skips rows when `AI Enabled` is `No`, when `Workflow Status` is `Human Help Needed`, `Documents Received`, `Closed`, or `Do Not Call`, or when `AI Attempt Count` has reached `Max AI Attempts`.
 
-## Running locally
+## Operational execution
 
-The Call API is run locally and dispatches to the hosted cloud worker:
+The Google Sheets automation loop runs as a background task inside the Call API container on Dokploy/VPS.
 
-```bash
-set -a && source .env && set +a
-LIVEKIT_AGENT_NAME=outbound-caller-prod .venv/bin/python -m uvicorn call_api:app --host 127.0.0.1 --port 8000
-```
-
-Then either run a single automation cycle:
-
-```bash
-set -a && source .env && set +a
-uv run sheet_calling_automation.py
-```
-
-or use the dashboard button. `POST /agent/start` starts a background loop inside the running Call API process; it repeats a cycle roughly every 15 seconds until stopped.
+To control the campaign loop:
+- **Start Agent**: Call `POST /agent/start` (via the API Dashboard) to begin the background loop. It will scan Sheet 1 and execute a call cycle roughly every 15 seconds.
+- **Stop/Kill**: Call `POST /agent/kill` (via the API Dashboard) to stop the background loop, clear the running flag, delete active LiveKit call rooms, and terminate active dials.
 
 ## Dashboard controls and API endpoints
 

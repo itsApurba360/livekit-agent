@@ -65,7 +65,7 @@ When MCP is not present, use the non-secret IDs in this file and ask the user fo
 | Git repo | https://github.com/itsApurba360/livekit-agent |
 | Branch | `master` |
 | Build type | `dockerfile` |
-| Dockerfile | `Dockerfile` (context: `.`) |
+| Dockerfile | `Dockerfile.api` (context: `.`) |
 | Auto-deploy | enabled (on git push) |
 | Worker inbound ports | none (worker connects outbound to LiveKit) |
 
@@ -78,59 +78,37 @@ The Call API app runs separately (e.g., on Dokploy or locally) to handle Hermes,
 - Call API app: runs `uv run uvicorn call_api:app --host 0.0.0.0 --port 8000`; expose only behind HTTPS and bearer auth.
 - The API app needs LiveKit URL/API credentials because it creates rooms, dispatches workers, and creates SIP participants, and must be configured with `LIVEKIT_AGENT_NAME=outbound-caller-prod` to target the Cloud worker.
 
-## Local verification before deploy
-
-Verify Call API locally:
-
-```bash
-# Call API
-set -a && source .env && set +a
-LIVEKIT_AGENT_NAME=outbound-caller-prod uv run uvicorn call_api:app --host 127.0.0.1 --port 8000
-```
-
-```bash
-curl -s http://127.0.0.1:8000/health
-open http://127.0.0.1:8000/dashboard
-```
-
-For Google Sheets campaigns, also verify `GOOGLE_SHEETS_SPREADSHEET_ID`, `GOOGLE_SHEETS_CREDS_PATH`, and the sheet schema in `docs/google-sheets-calling-automation.md` before using the dashboard Start Agent button.
-
 ## Environment Variables
 
-Set in Dokploy application settings. Values live in local `.env`, not in git.
+Configure the following environment variables in the Dokploy application settings for the Call API. Do not commit these values to git.
 
-### Worker app
+### Required Settings
 
-- `LIVEKIT_URL`
-- `LIVEKIT_API_KEY`
-- `LIVEKIT_API_SECRET`
-- `LIVEKIT_AGENT_NAME` (usually `outbound-caller-dokploy` for Dokploy worker testing)
-- `FRAPPE_SITE_URL`
-- `FRAPPE_API_KEY`
-- `FRAPPE_API_SECRET`
-- `GOOGLE_API_KEY` and/or `OPENAI_API_KEY`
-- `OUTBOUND_TRUNK_ID` (legacy/manual worker-dial fallback only; API-owned dialing is preferred)
-- `VOBIZ_SIP_DOMAIN` (optional)
-- `DEFAULT_TRANSFER_NUMBER` (optional)
+- `LIVEKIT_URL` — Your LiveKit Cloud URL.
+- `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` — LiveKit API key and secret.
+- `LIVEKIT_AGENT_NAME` — Set to `outbound-caller-prod` (the name of the worker running on LiveKit Cloud).
+- `OUTBOUND_TRUNK_ID` — The SIP trunk ID (e.g. `ST_xxxx`) from LiveKit Cloud → Telephony.
+- `CALL_API_TOKEN` — Bearer token for authenticating Call API requests.
+- `CALL_API_DATABASE_URL` (or `CALL_STATUS_DATABASE_URL`) — Postgres database connection URL. Use the connection string for your Dokploy Postgres database (e.g. `agents-postgress-m6nqpj`).
 
-For a LiveKit Cloud worker, configure worker-side Frappe/model secrets plus `LIVEKIT_AGENT_NAME=outbound-caller-prod`; LiveKit Cloud injects its own LiveKit connection credentials. If transcript/session-report posting should work, also configure `CALL_API_INTERNAL_URL` (or `LIVEKIT_CALL_API_URL`) and `CALL_API_INTERNAL_TOKEN` (or `LIVEKIT_CALL_API_TOKEN`) pointing at the hosted Call API.
+### Google Sheets Campaign Settings (If Running Campaigns)
 
-### Call API app
+- `GOOGLE_SHEETS_SPREADSHEET_ID` — Spreadsheet ID to run outbound campaigns from.
+- `GOOGLE_SHEETS_CREDS_PATH` — File path to the mounted Google Service Account credentials JSON file.
 
-- `LIVEKIT_URL`
-- `LIVEKIT_API_KEY`
-- `LIVEKIT_API_SECRET`
-- `LIVEKIT_AGENT_NAME` (set to the worker it dispatches, e.g. `outbound-caller-prod`)
-- `OUTBOUND_TRUNK_ID` (`ST_...`, not a phone number)
-- `CALL_API_TOKEN`
-- `CALL_API_ALLOWED_COUNTRY_PREFIXES` (optional, default `+91`)
-- `CALL_API_DEFAULT_COUNTRY_CODE` (optional, default `+91`)
-- `CALL_API_MAX_PURPOSE_CHARS` (optional)
-- `CALL_API_DATABASE_URL` / `CALL_STATUS_DATABASE_URL` for required Postgres persistence. Use the Dokploy Postgres app `agents-postgress-m6nqpj` connection string here.
-- Recording lookup settings: `VOBIZ_API_BASE_URL`, `VOBIZ_AUTH_ID`, `VOBIZ_AUTH_TOKEN`, optional `VOBIZ_RECORDING_FORMAT` / `VOBIZ_RECORDING_CHANNEL_TYPE`
-- Google Sheets campaign settings if the dashboard Start Agent loop runs on Dokploy: `GOOGLE_SHEETS_SPREADSHEET_ID`, `GOOGLE_SHEETS_CREDS_PATH`
+### Recording / Vobiz Integration Settings
 
-The Call API app should use Postgres for dashboard/call history when the worker is on LiveKit Cloud or a different Dokploy app. Runtime files still remain local to the API process: `agent_running.flag`, `agent_stop.flag`, and `agent_error.log`; they are operational artifacts, not source files.
+- `VOBIZ_API_BASE_URL` — Vobiz API base URL.
+- `VOBIZ_AUTH_ID` / `VOBIZ_AUTH_TOKEN` — Vobiz API authentication credentials.
+- `VOBIZ_SIP_DOMAIN` — Vobiz SIP trunk domain.
+
+### Optional Config overrides
+
+- `CALL_API_ALLOWED_COUNTRY_PREFIXES` — Allowed prefix restrictions (default `+91`).
+- `CALL_API_DEFAULT_COUNTRY_CODE` — Default dial prefix (default `+91`).
+- `CALL_API_MAX_PURPOSE_CHARS` — Max description length allowed (default `300`).
+
+---
 
 ## Agent Config (runtime)
 

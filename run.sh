@@ -33,13 +33,8 @@ case "$CMD" in
     echo "Starting Web UI sandbox server..."
     exec "$VENV_BIN/python" web_ui_server.py "$@"
     ;;
-  test)
-    [ $# -gt 0 ] && shift
-    echo "Running tests..."
-    exec "$VENV_BIN/python" -m unittest discover -s tests "$@"
-    ;;
   *)
-    echo "Usage: $0 {api|web|test} [args...]"
+    echo "Usage: $0 {api|web} [args...]"
     exit 1
     ;;
 esac

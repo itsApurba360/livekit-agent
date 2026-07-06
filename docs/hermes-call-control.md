@@ -25,7 +25,7 @@ Hermes make_phone_call tool / dashboard / sheet_calling_automation.py
 
 Hermes never receives LiveKit server credentials. It only needs:
 
-- `LIVEKIT_CALL_API_URL` — base URL of the call API, e.g. `http://127.0.0.1:8000` locally.
+- `LIVEKIT_CALL_API_URL` — base URL of the call API, e.g. `https://api.yourdomain.com` (Dokploy/VPS URL).
 - `LIVEKIT_CALL_API_TOKEN` — same secret value as `CALL_API_TOKEN` on the API service.
 
 The Call API persists call records through `call_status_store.py`. Set `CALL_API_DATABASE_URL` (preferred) or `CALL_STATUS_DATABASE_URL` to a Postgres connection string on both the API and worker. There is no local file-backed fallback; missing Postgres configuration is a startup/runtime configuration error.
@@ -36,9 +36,9 @@ Use the production LiveKit Cloud worker dispatch name:
 
 - `outbound-caller-prod` — production LiveKit Cloud worker
 
-## Local setup
+## Setup and environment configuration
 
-### 1. livekit_agent `.env`
+### 1. livekit_agent configuration (Dokploy app secrets)
 
 ```bash
 CALL_API_TOKEN=<openssl rand -hex 32>
@@ -46,10 +46,10 @@ CALL_API_ALLOWED_COUNTRY_PREFIXES=+91
 CALL_API_DEFAULT_COUNTRY_CODE=+91
 OUTBOUND_TRUNK_ID=ST_xxxxxxxxxxxxxxxxx
 LIVEKIT_AGENT_NAME=outbound-caller-prod
-LIVEKIT_CALL_API_URL=http://127.0.0.1:8000
+LIVEKIT_CALL_API_URL=https://api.yourdomain.com
 LIVEKIT_CALL_API_TOKEN=<same as CALL_API_TOKEN>
-# For shared API/worker status storage in Dokploy/LiveKit Cloud:
-# CALL_API_DATABASE_URL=postgresql://user:password@host:5432/database
+# Shared Postgres database between API and worker:
+CALL_API_DATABASE_URL=postgresql://user:password@host:5432/database
 ```
 
 Optional Google Sheets campaign automation:
@@ -73,7 +73,7 @@ In Hermes config (`~/.hermes/config.yaml` under `environment:`) or the shell tha
 
 ```yaml
 environment:
-  LIVEKIT_CALL_API_URL: "http://127.0.0.1:8000"
+  LIVEKIT_CALL_API_URL: "https://api.yourdomain.com"
   LIVEKIT_CALL_API_TOKEN: "<same as CALL_API_TOKEN>"
 ```
 
@@ -89,22 +89,12 @@ hermes plugins enable livekit-caller
 
 Restart Hermes after changing plugin/config values.
 
-### 4. Run the API
+### 4. Running the Call API
 
-The Agent Worker (`agent.py`) is deployed and hosted on **LiveKit Cloud** (agent ID: `CA_ct6s7UGyzoju`). **No local worker process needs to be run locally.** 
-
-Start the Call API locally:
+The Call API runs on Dokploy/VPS using `Dockerfile.api`. To verify that it's healthy, query the hosted health endpoint:
 
 ```bash
-cd /path/to/livekit_agent
-set -a && source .env && set +a
-LIVEKIT_AGENT_NAME=outbound-caller-prod uv run uvicorn call_api:app --host 127.0.0.1 --port 8000
-```
-
-Health check:
-
-```bash
-curl -s http://127.0.0.1:8000/health
+curl -s https://api.yourdomain.com/health
 ```
 
 ### 5. Use from Hermes
@@ -132,7 +122,7 @@ Persisted records can also show transitional or post-answer statuses such as `di
 Open:
 
 ```bash
-open http://127.0.0.1:8000/dashboard
+open https://api.yourdomain.com/dashboard
 ```
 
 Paste `CALL_API_TOKEN`. The static page does not embed call data; browser requests send `Authorization: Bearer <token>` to protected JSON endpoints.
@@ -212,12 +202,6 @@ They are generated operational files and should not be committed.
 
 ## Deployment matrix
 
-### Local API dispatching a LiveKit Cloud worker
-
-```bash
-LIVEKIT_AGENT_NAME=outbound-caller-prod uv run uvicorn call_api:app --host 127.0.0.1 --port 8000
-```
-
 ### Dokploy API dispatching a LiveKit Cloud worker
 
 Set the Dokploy API app environment to dispatch the production worker and own SIP dialing:
@@ -259,22 +243,7 @@ Important: set the same `CALL_API_DATABASE_URL` / `CALL_STATUS_DATABASE_URL` on 
 - Confirm with the user before placing real calls or starting a sheet-driven campaign.
 - Do not run multiple sheet automation loops against the same sheet without an external lock.
 
-## Tests
-
-```bash
-.venv/bin/python -m unittest discover -s tests -p test_call_outcomes.py -v
-.venv/bin/python -m unittest discover -s tests -p test_call_api.py -v
-.venv/bin/python -m unittest discover -s tests -p test_agent_call_context.py -v
-.venv/bin/python -m unittest discover -s tests -p test_hermes_livekit_plugin.py -v
-.venv/bin/python -m unittest discover -s tests -p test_sheet_automation.py -v
-```
 
 ## Production (Dokploy)
 
-See [dokploy.md](./dokploy.md). Verify locally first, then deploy a **separate** API application with:
-
-```bash
-uv run uvicorn call_api:app --host 0.0.0.0 --port 8000
-```
-
-Point Hermes `LIVEKIT_CALL_API_URL` at the HTTPS URL of that API app.
+See [dokploy.md](./dokploy.md) to deploy the API application. Point Hermes `LIVEKIT_CALL_API_URL` at the HTTPS URL of that API app.

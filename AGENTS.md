@@ -44,66 +44,16 @@ Never commit `.env`, Google service-account JSON, runtime flag files, or logs.
 > [!NOTE]
 > The Agent Worker (`agent.py`) is deployed and hosted on **LiveKit Cloud** (agent ID: `CA_ct6s7UGyzoju`). **No local worker process is supported or run locally.** All environments dispatch and connect directly to this cloud worker (`outbound-caller-prod`).
 
-Hermes, the dashboard, and sheet automation trigger outbound PSTN calls through `call_api.py`. Run the Call API:
+### Running the Call API and Sheets Automation
 
-```bash
-set -a && source .env && set +a
-LIVEKIT_AGENT_NAME=outbound-caller-prod .venv/bin/python -m uvicorn call_api:app --host 127.0.0.1 --port 8000
-```
+Production services run exclusively on hosted infrastructure:
+- **Call-Control API (`call_api.py`)** runs on **Dokploy/VPS** using `Dockerfile.api`.
+- **Agent Worker (`agent.py`)** runs on **LiveKit Cloud**.
 
-Use `--host 0.0.0.0` only when another device/service must reach the API over LAN/VPN/tunnel and the API is protected by HTTPS/bearer auth. Verify with:
-
-```bash
-curl -s http://127.0.0.1:8000/health
-```
-
-Open the local dashboard:
-
-```bash
-open http://127.0.0.1:8000/dashboard
-```
-
-Paste `CALL_API_TOKEN`; the page fetches protected data from `GET /dashboard/data`, supports inline recording playback, and exposes Start Agent / Kill Switch controls for the Google Sheets automation loop.
-
-### Running Google Sheets Automation
-
-Use this when the campaign is driven from the Excel-like Google Sheet (`Master Sheet`) rather than by manually posting one `/calls` request.
-
-The sheet is the source of truth for who to call:
-
-- Sheet 1 / `Master Sheet`: client queue. Rows with `Data Received Status=Pending`, `AI Enabled=Yes`, and a dialable `Mobile Number` are eligible.
-- Sheet 2 / `Followups`: call log and next-action history. Completed calls are synced here with outcome, transcript, recording link, notes, and the next action.
-
-Preferred one-command runner for the hosted LiveKit Cloud worker:
-
-```bash
-./run_sheet_calls.sh
-```
-
-This loads `.env`, defaults `GOOGLE_SHEETS_SPREADSHEET_ID` to `1_OXV6OAvrhgaSOnp03uJn8no8h3qTpk3g2lUX8CRnH4` when unset, starts `call_api.py` only if the API is not already healthy, sets `LIVEKIT_AGENT_NAME=outbound-caller-prod` by default, and posts `POST /agent/start`. It does **not** start a local `agent.py` worker.
-
-Operational flow from the sheet:
-
-1. Confirm `.env` has `GOOGLE_SHEETS_SPREADSHEET_ID`, `GOOGLE_SHEETS_CREDS_PATH`, `CALL_API_TOKEN`, LiveKit credentials, `OUTBOUND_TRUNK_ID`, and the shared Postgres URL.
-2. Run `./run_sheet_calls.sh`.
-3. The Call API stays local on `127.0.0.1:8000`, dispatches `outbound-caller-prod` on LiveKit Cloud, and dials through the configured SIP trunk.
-4. The loop scans pending `Master Sheet` rows, posts each eligible row to `/calls`, and avoids duplicates using active call status plus `CID`.
-5. After calls finish, sync writes the call outcome, transcript, recording proxy URL, comments, next action, and attempt counts back to `Followups` and `Master Sheet`.
-
-One cycle:
-
-```bash
-set -a && source .env && set +a
-.venv/bin/python sheet_calling_automation.py
-```
-
-Dashboard-managed loop:
-
-- `POST /agent/start` starts the loop inside the Call API process and repeats roughly every 15 seconds.
-- `POST /agent/kill` writes `agent_stop.flag`, removes `agent_running.flag`, deletes active LiveKit rooms tracked in PostgreSQL, and marks active calls killed.
-- `POST /calls/{call_id}/kill` terminates one call room.
-
-See `docs/google-sheets-calling-automation.md` for sheet schema and operational rules.
+For development, testing, and operation details:
+- **Google Sheets Calling Automation**: The loop runs in the background of the Call API process on Dokploy/VPS. It is started using the **Start Agent** button on the Dokploy-hosted Call API Dashboard (`POST /agent/start`) and stopped using the **Kill Switch** button (`POST /agent/kill`). Refer to [docs/google-sheets-calling-automation.md](docs/google-sheets-calling-automation.md).
+- **Manual API Testing**: Trigger calls by posting to the Dokploy API's `/calls` endpoint.
+- **Local Development**: Local commands are only used for writing code, running unit tests, or sandbox mock testing. Do not run local API servers or local automation loops for production campaigns.
 
 ### Running the Web UI Sandbox Tester
 
@@ -117,26 +67,6 @@ The web UI connects to the LiveKit Cloud project and dispatches the hosted cloud
 
 Use the **Mock Outbound** profile to test outbound conversation behavior without placing a PSTN call. It sends `call_direction=outbound` and `outbound_dial_mode=mock`, so the worker keeps outbound prompting and waits for the user to speak first, but skips SIP participant creation.
 
-### Running Tests
-
-Targeted unit tests (no external services required):
-
-```bash
-.venv/bin/python -m unittest discover -s tests -p test_agent_call_context.py -v
-.venv/bin/python -m unittest discover -s tests -p test_web_ui.py -v
-.venv/bin/python -m unittest discover -s tests -p test_call_outcomes.py -v
-.venv/bin/python -m unittest discover -s tests -p test_call_api.py -v
-.venv/bin/python -m unittest discover -s tests -p test_hermes_livekit_plugin.py -v
-.venv/bin/python -m unittest discover -s tests -p test_sheet_automation.py -v
-```
-
-Full discovery should stay focused on outbound call management:
-
-```bash
-.venv/bin/python -m unittest discover -s tests
-```
-
-Tests use Python's `unittest` framework despite `pytest` in dev dependencies. Many tests heavily stub LiveKit modules.
 
 ## Architecture
 
@@ -241,7 +171,7 @@ Tests use Python's `unittest` framework despite `pytest` in dev dependencies. Ma
 - SIP failure `object cannot be found` usually means `OUTBOUND_TRUNK_ID` is wrong. SIP `486 Busy Here` maps to `failed_busy`; `480 Temporarily Unavailable` maps best-effort to `failed_unreachable`; `408 Request Timeout` maps to `failed_no_answer`.
 - Frappe lookup failures (for example local `127.0.0.1:8002` refused) fall back to an unknown lead and must not block outbound dialing.
 
-The worker is deployed to LiveKit Cloud (which runs the Dockerfile with `uv run agent.py start` under the hood) using:
+The worker is deployed to LiveKit Cloud (which builds and runs the root `Dockerfile` with the default command `agent.py start` under the hood) using:
 
 ```bash
 lk agent deploy --project "project-360ithub-live" --region ap-south --yes
@@ -255,7 +185,7 @@ lk agent update-secrets --id CA_PUFV6Djq5we3 --project "project-360ithub-live" -
 
 The worker connects outbound to LiveKit.
 
-The Call API is deployed as a separate service/process using:
+The Call API is deployed on Dokploy/VPS using `Dockerfile.api` (which defaults to starting the Uvicorn FastAPI server on port 8000), or run manually using:
 
 ```bash
 uv run uvicorn call_api:app --host 0.0.0.0 --port 8000

@@ -72,106 +72,35 @@ The project now includes Google Sheets dependencies (`gspread`, `google-auth`) f
 
 ---
 
-## Running Locally
+## Development & Mock Testing
 
-> [!NOTE]
-> The Agent Worker (`agent.py`) is deployed and hosted on **LiveKit Cloud** (under agent ID `CA_ct6s7UGyzoju` with dispatch name `outbound-caller-prod`). **No local worker process needs to be run locally going forward.** All environments (local API, staging, production) dispatch to this cloud worker.
+The local setup is used **exclusively for writing code, running unit tests, or testing conversation behaviors in the mock sandbox**. Production traffic and active PSTN calling are routed through LiveKit Cloud and Dokploy/VPS.
 
-### Call-control API
+### Web UI Sandbox Tester
+You can test the agent's prompts and conversation logic locally without placing real PSTN/telephony calls:
 
-Run the call control API locally. It is configured to dispatch the worker on LiveKit Cloud:
-
-```bash
-set -a && source .env && set +a
-LIVEKIT_AGENT_NAME=outbound-caller-prod uv run uvicorn call_api:app --host 127.0.0.1 --port 8000
-```
-
-Verify:
-
-```bash
-curl -s http://127.0.0.1:8000/health
-```
-
-Open the dashboard:
-
-```bash
-open http://127.0.0.1:8000/dashboard
-```
-
-The dashboard asks for `CALL_API_TOKEN`, loads protected data from `GET /dashboard/data`, shows inline recording playback when available, and exposes Start Agent / Kill Switch controls for the Google Sheets automation loop. For deployments where API and worker are separate containers/hosts, configure both with the same Postgres URL so dashboard, worker status updates, callbacks, and Sheets sync share one status store.
-
-### Trigger one call through the API
-
-```bash
-curl -X POST "http://127.0.0.1:8000/calls" \
-  -H "Authorization: Bearer <CALL_API_TOKEN>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "phone_number": "+91XXXXXXXXXX",
-    "purpose": "Local integration test call from Hermes setup",
-    "agent_type": "sales",
-    "requested_by": "manual-local-test"
-  }'
-```
-
-`POST /calls` blocks until the immediate setup/dial result is known and returns statuses such as `answered`, `failed_busy`, `failed_no_answer`, `failed_unreachable`, `failed_rejected`, `failed_trunk`, or `failed`.
-
-### Google Sheets campaign automation
-
-See [docs/google-sheets-calling-automation.md](docs/google-sheets-calling-automation.md).
-
-Quick local one-cycle run:
-
-```bash
-set -a && source .env && set +a
-uv run sheet_calling_automation.py
-```
-
-Dashboard-managed loop:
-
-- **Start Agent** → `POST /agent/start`
-- **Kill Switch** → `POST /agent/kill` and terminate active LiveKit rooms known to the status store
-
-Runtime flag/log files (`agent_running.flag`, `agent_stop.flag`, `agent_error.log`) are operational artifacts and should not be committed.
-
-### Web UI sandbox tester
-
-```bash
-uv run web_ui_server.py
-```
-
-Open [http://localhost:8080](http://localhost:8080), select a profile, connect, and speak. The worker must already be running.
+1. Run the local sandbox server:
+   ```bash
+   uv run web_ui_server.py
+   ```
+2. Open `http://localhost:8080` in your browser.
+3. Select the **Mock Outbound** profile (this passes `outbound_dial_mode=mock` to the cloud worker, allowing you to converse with the agent via WebRTC in the browser without placing a phone call).
 
 ---
 
-## Tests
+## Production Deployment & Operations
 
-Targeted unit tests use `unittest` and stub LiveKit heavily; these do not require external services:
+Production services are fully hosted:
+- **Agent Worker (`agent.py`)** runs on **LiveKit Cloud**.
+- **Call-Control API (`call_api.py`)** runs on **Dokploy/VPS** using `Dockerfile.api`.
 
-```bash
-.venv/bin/python -m unittest discover -s tests -p test_agent_tools.py -v
-.venv/bin/python -m unittest discover -s tests -p test_agent_call_context.py -v
-.venv/bin/python -m unittest discover -s tests -p test_web_ui.py -v
-.venv/bin/python -m unittest discover -s tests -p test_call_outcomes.py -v
-.venv/bin/python -m unittest discover -s tests -p test_call_api.py -v
-.venv/bin/python -m unittest discover -s tests -p test_hermes_livekit_plugin.py -v
-.venv/bin/python -m unittest discover -s tests -p test_sheet_automation.py -v
-```
-
-Full discovery can include integration-style Frappe tests under `tests/`; run it only when the configured Frappe site is reachable:
-
-```bash
-.venv/bin/python -m unittest discover -s tests
-```
-
-Root-level and Frappe integration tests require real services and a configured `.env`:
-
-```bash
-.venv/bin/python -m unittest test_remote_agent.py
-.venv/bin/python -m unittest discover -s tests -p test_frappe_connection.py -v
-```
+For full deployment steps, refer to:
+- [docs/dokploy.md](docs/dokploy.md) — Dokploy API deployment and container configurations.
+- [AGENTS.md](AGENTS.md) — Deploying the worker to LiveKit Cloud.
+- [docs/google-sheets-calling-automation.md](docs/google-sheets-calling-automation.md) — Running Google Sheets campaigns via the Dokploy API background loop.
 
 ---
+
 
 ## Documentation Map
 

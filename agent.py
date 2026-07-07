@@ -309,9 +309,21 @@ async def entrypoint(ctx: agents.JobContext):
         "",
     )
 
+    try:
+        initial_greeting = initial_greeting_template.format(
+            lead_name=lead_name,
+            name=lead_name,
+            company_name=company_name,
+            company=company_name,
+            purpose=call_context.call_purpose or ""
+        )
+    except Exception as err:
+        logger.warning(f"Failed to format initial greeting: {err}")
+        initial_greeting = initial_greeting_template
+
     # Resolve dynamic system prompt compilation
     def get_compiled_prompt(is_verified: bool = False) -> str:
-        nonlocal system_prompt_template, lead_name, company_name, customer_id, call_context
+        nonlocal system_prompt_template, lead_name, company_name, customer_id, call_context, initial_greeting
         format_dict = {
             "lead_name": lead_name,
             "company_name": company_name,
@@ -342,7 +354,7 @@ async def entrypoint(ctx: agents.JobContext):
         if preferred_language:
             prompt_base += (
                 f"\n- The campaign sheet says the customer's preferred language is {preferred_language}. "
-                f"Start the conversation in {preferred_language}. Specifically, translate your initial greeting template ('{initial_greeting_template}') into {preferred_language} and use that translation as your greeting on the user's first utterance. "
+                f"Start the conversation in {preferred_language}. Specifically, translate your initial greeting ('{initial_greeting}') into {preferred_language} and use that translation as your greeting on the user's first utterance. "
                 f"This overrides any other instruction telling you to say the greeting in Hindi/Hinglish. "
                 "If the customer responds in another language, switch to the customer's language."
             )
@@ -379,18 +391,6 @@ async def entrypoint(ctx: agents.JobContext):
         return prompt_base
 
     system_prompt = get_compiled_prompt(is_verified=False)
-
-    try:
-        initial_greeting = initial_greeting_template.format(
-            lead_name=lead_name,
-            name=lead_name,
-            company_name=company_name,
-            company=company_name,
-            purpose=call_context.call_purpose or ""
-        )
-    except Exception as err:
-        logger.warning(f"Failed to format initial greeting: {err}")
-        initial_greeting = initial_greeting_template
 
     # Setup provider configurations
     provider = agent_config.get("provider", "Google")

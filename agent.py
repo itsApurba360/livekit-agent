@@ -366,8 +366,8 @@ async def entrypoint(ctx: agents.JobContext):
         if is_sheet_campaign:
             current_date_str = now_ist.strftime("%d/%m/%Y")
             prompt_base += (
-                f"\n\n--- CAMPAIGN RULES: DOCUMENT COLLECTION & FOLLOW-UP ---\n"
-                f"- Ask the customer if their documents are ready.\n"
+                f"\n\n--- CAMPAIGN RULES: DOCUMENT COLLECTION & FOLLOW-UP (Only apply after greeting turn) ---\n"
+                f"- After the initial greeting turn is complete and the customer has responded, ask the customer if their documents are ready.\n"
                 f"- If they are ready, ask when they will send them. Once they provide a date or date and time, thank them politely and hang up using the `end_call` tool. Do NOT schedule any follow-up or human callback in this case.\n"
                 f"- If they are not ready, or if they mention any blocker or need help, ask them what specific help/query they have. Collect their query, ask when they would be free for a callback from a human expert, schedule a human callback using `schedule_human_callback` with the callback time and the query in notes, and then hang up using `end_call`.\n"
                 f"- Never ask the customer if they want an AI call or human call. Never mention these options.\n"

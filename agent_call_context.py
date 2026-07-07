@@ -680,7 +680,9 @@ def _call_context_prompt(call_context: CallContext) -> str:
     if call_context.is_outbound:
         lines.append(
             "- This is an outbound call placed by LSA Office. The customer or lead did not call us in this session. "
-            f"Greet the callee immediately when they answer the call. Introduce yourself as {agent_config.get('support_agent', {}).get('name', 'Nandini')} from LSA Office, and explain the reason/purpose of the call in simple, polite, spoken Hinglish (or natural conversational language). "
+            f"Greet the callee immediately when they answer the call. Introduce yourself as {agent_config.get('support_agent', {}).get('name', 'Nandini')} from LSA Office. "
+            "CRITICAL FIRST-TURN ONLY RULE: In your very first turn (greeting), ONLY say the initial greeting. Do NOT explain the reason/purpose of the call yet. Wait for the customer to respond to your greeting. "
+            "Only in your subsequent turns (after the customer replies to your greeting) should you explain the reason/purpose of the call in simple, polite, spoken Hinglish (or natural conversational language). "
             "Use the call purpose above as the reason when it is present; do not invent a different reason. "
             "Do NOT state the call purpose verbatim; instead, interpret and simplify it so it sounds natural and conversational to the customer. "
             "If you hear a voicemail or answering-machine greeting, wait for the greeting or beep to finish, leave one brief relevant message from LSA Office using the call purpose, do not ask questions, and then call the end_call tool."

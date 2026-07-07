@@ -505,10 +505,12 @@ async def entrypoint(ctx: agents.JobContext):
     agent_instance = StandaloneAgent(instructions=system_prompt, tools=agent_tools)
     if "3.1" in model and provider == "Google":
         logger.info("Pre-seeding initial user message to trigger Gemini 3.1 Live greeting")
-        agent_instance.chat_ctx.add_message(
+        chat_ctx = agent_instance.chat_ctx.copy()
+        chat_ctx.add_message(
             role="user",
             content="hello"
         )
+        await agent_instance.update_chat_ctx(chat_ctx)
     audio_input_kwargs = {"noise_cancellation": nc_option}
     if call_context.is_outbound:
         audio_input_kwargs["pre_connect_audio"] = False

@@ -293,8 +293,11 @@ async def entrypoint(ctx: agents.JobContext):
     caller_status = caller_info.get("status")
     customer_id = caller_info.get("customer_id")
     lead_id = caller_info.get("lead_id")
-    lead_name = config_dict.get("customer_name") or config_dict.get("name") or caller_info.get("name") or "जी"
+    contact_person = config_dict.get("contact_person") or ""
+    company_owner = config_dict.get("customer_name") or config_dict.get("name") or caller_info.get("name") or "जी"
+    contact_person_name = contact_person if contact_person else company_owner
     company_name = config_dict.get("company_name") or config_dict.get("company") or caller_info.get("company") or "हमारी कंपनी"
+    gender = (config_dict.get("gender") or "").strip().lower()
     customer_id = config_dict.get("customer_id") or config_dict.get("cid") or caller_info.get("customer_id")
 
     agent_type = _select_agent_type(config_dict, caller_status)
@@ -309,12 +312,15 @@ async def entrypoint(ctx: agents.JobContext):
         "",
     )
 
+    if gender in {"female", "f", "woman", "girl"}:
+        initial_greeting_template = initial_greeting_template.replace("कैसे हैं आप", "कैसी हैं आप")
+        system_prompt_template = system_prompt_template.replace("कैसे हैं आप", "कैसी हैं आप")
+
     try:
         initial_greeting = initial_greeting_template.format(
-            lead_name=lead_name,
-            name=lead_name,
+            contact_person_name=contact_person_name,
+            company_owner=company_owner,
             company_name=company_name,
-            company=company_name,
             purpose=call_context.call_purpose or ""
         )
     except Exception as err:
@@ -323,9 +329,10 @@ async def entrypoint(ctx: agents.JobContext):
 
     # Resolve dynamic system prompt compilation
     def get_compiled_prompt(is_verified: bool = False) -> str:
-        nonlocal system_prompt_template, lead_name, company_name, customer_id, call_context, initial_greeting
+        nonlocal system_prompt_template, contact_person_name, company_owner, company_name, customer_id, call_context, initial_greeting
         format_dict = {
-            "lead_name": lead_name,
+            "contact_person_name": contact_person_name,
+            "company_owner": company_owner,
             "company_name": company_name,
             "verification_rules": DEFAULT_SUPPORT_VERIFIED_RULES if is_verified else DEFAULT_SUPPORT_UNVERIFIED_RULES
         }
@@ -337,6 +344,18 @@ async def entrypoint(ctx: agents.JobContext):
         if "{verification_rules}" not in prompt_base and agent_type == "Support":
             rules_addon = DEFAULT_SUPPORT_VERIFIED_RULES if is_verified else DEFAULT_SUPPORT_UNVERIFIED_RULES
             prompt_base += f"\n\nSecurity Rules:\n{rules_addon}"
+
+        if call_context.is_outbound:
+            prompt_base += f"\n\nOutbound Calling Context:"
+            prompt_base += f"\n- Contact Person: '{contact_person_name}'."
+            prompt_base += f"\n- Company Owner: '{company_owner}'."
+            prompt_base += f"\n- Company Name: '{company_name}'."
+            if gender:
+                prompt_base += f"\n- Contact Person Gender: '{gender}'."
+                if gender in {"female", "f", "woman", "girl"}:
+                    prompt_base += "\n- Address them respectfully as female (use feminine verbs like 'कैसी हैं आप' or address as 'मैम')."
+                else:
+                    prompt_base += "\n- Address them respectfully as male (use masculine verbs like 'कैसे हैं आप' or address as 'सर')."
 
         if customer_id:
             prompt_base += f"\n\nThe current outbound campaign row is linked to Customer ID: '{customer_id}'. Customer lookup and WhatsApp/PDF tools are disabled for now; use only scheduling or end-call tools."

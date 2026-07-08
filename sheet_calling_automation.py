@@ -166,6 +166,8 @@ async def trigger_outbound_call(row: dict) -> bool:
         "agent_type": "support",
         "customer_name": str(row.get("Owner name") or ""),
         "company_name": str(row.get("Company Name") or ""),
+        "contact_person": str(row.get("Contact person") or ""),
+        "gender": str(row.get("Gender") or ""),
         "requested_by": "sheets_automation",
         "metadata": {
             "cid": str(row.get("CID")),

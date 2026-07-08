@@ -152,7 +152,7 @@ Use the **Mock Outbound** profile to test outbound conversation behavior without
 - `agent_type`, `provider`, `model`, `voice`
 - `noise_cancellation`, `custom_tts`
 - `support_agent` / `sales_agent`: `name`, direction-specific greetings, `system_prompt`
-- System prompts use `{lead_name}` and `{company_name}` placeholders; `{verification_rules}` is legacy WhatsApp/Frappe prompt support.
+- System prompts use `{contact_person_name}`, `{company_owner}`, and `{company_name}` placeholders; `{verification_rules}` is legacy WhatsApp/Frappe prompt support.
 
 ## Important Implementation Notes
 

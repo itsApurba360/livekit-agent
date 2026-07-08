@@ -38,6 +38,10 @@ class CallContext:
     call_purpose: Optional[str] = None
     requested_by: Optional[str] = None
     last_conversation_history: Optional[str] = None
+    contact_person: Optional[str] = None
+    customer_name: Optional[str] = None
+    company_name: Optional[str] = None
+    gender: Optional[str] = None
 
     @property
     def is_outbound(self) -> bool:
@@ -141,6 +145,10 @@ def _build_call_context(
     call_id = config_dict.get("call_id")
     call_purpose = config_dict.get("call_purpose") or config_dict.get("purpose")
     requested_by = config_dict.get("requested_by") or config_dict.get("source")
+    contact_person = config_dict.get("contact_person")
+    customer_name = config_dict.get("customer_name") or config_dict.get("name")
+    company_name = config_dict.get("company_name") or config_dict.get("company")
+    gender = config_dict.get("gender")
 
     participant = sip_participant or _find_sip_participant(ctx)
     if participant:
@@ -167,6 +175,10 @@ def _build_call_context(
             call_purpose=call_purpose,
             requested_by=requested_by,
             last_conversation_history=config_dict.get("last_conversation_history") or config_dict.get("history"),
+            contact_person=contact_person,
+            customer_name=customer_name,
+            company_name=company_name,
+            gender=gender,
         )
 
     if not phone_number:
@@ -184,6 +196,10 @@ def _build_call_context(
         call_purpose=call_purpose,
         requested_by=requested_by,
         last_conversation_history=config_dict.get("last_conversation_history") or config_dict.get("history"),
+        contact_person=contact_person,
+        customer_name=customer_name,
+        company_name=company_name,
+        gender=gender,
     )
 
 
@@ -653,6 +669,14 @@ def _call_context_prompt(call_context: CallContext) -> str:
         "Call context:",
         f"- Direction: {call_context.direction}.",
     ]
+    if call_context.contact_person:
+        lines.append(f"- Contact person: {call_context.contact_person}.")
+    if call_context.customer_name:
+        lines.append(f"- Company Owner name: {call_context.customer_name}.")
+    if call_context.company_name:
+        lines.append(f"- Company Name: {call_context.company_name}.")
+    if call_context.gender:
+        lines.append(f"- Contact person gender: {call_context.gender}.")
     if call_context.phone_number:
         if call_context.is_outbound:
             lines.append(f"- Callee phone number: {call_context.phone_number}.")

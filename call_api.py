@@ -185,6 +185,8 @@ class CallRequest(BaseModel):
     agent_type: Optional[str] = Field(default="support", description="Optional override: support or sales")
     customer_name: Optional[str] = None
     company_name: Optional[str] = None
+    contact_person: Optional[str] = None
+    gender: Optional[str] = None
     requested_by: str = "hermes"
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -461,6 +463,8 @@ async def create_call(
         "agent_type": request.agent_type,
         "customer_name": request.customer_name,
         "company_name": request.company_name,
+        "contact_person": request.contact_person,
+        "gender": request.gender,
         "source": request.metadata.get("source", request.requested_by),
     }
     dispatch_metadata = {key: value for key, value in dispatch_metadata.items() if value is not None}

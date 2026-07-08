@@ -68,6 +68,10 @@ class WebUITesterHandler(http.server.SimpleHTTPRequestHandler):
                     "call_purpose": body.get("call_purpose"),
                     "requested_by": body.get("requested_by"),
                     "agent_type": body.get("agent_type"),
+                    "contact_person": body.get("contact_person"),
+                    "gender": body.get("gender"),
+                    "customer_name": body.get("customer_name") or body.get("company_owner"),
+                    "company_name": body.get("company_name"),
                 }
                 metadata = {key: value for key, value in metadata.items() if value}
                 dispatch_metadata = json.dumps(metadata)

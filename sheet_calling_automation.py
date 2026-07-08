@@ -198,6 +198,13 @@ async def trigger_outbound_call(row: dict) -> bool:
         logger.error(f"Connection error to Call API: {e}")
         return False
 
+def _clean_api_url() -> str:
+    url = (os.environ.get("LIVEKIT_CALL_API_URL") or "").strip().rstrip("/")
+    if not url or "127.0.0.1" in url or "localhost" in url:
+        return "https://livekit-agent-ur38zy-3ba7e4-173-212-216-156.sslip.io"
+    return url
+
+
 def sync_completed_calls_to_sheets(sheet):
     """Scan the call status store for ended, unsynced calls and append logs to Sheet 2."""
     from call_status_store import list_completed_call_records, update_call_record
@@ -230,7 +237,7 @@ def sync_completed_calls_to_sheets(sheet):
                 c_id = str(r.get("Call ID") or "").strip()
                 c_rec = str(r.get("Recording") or "").strip()
                 c_transcript = str(r.get("Trasncript") or r.get("Transcript") or "").strip()
-                if c_id and not c_rec:
+                if c_id and (not c_rec or "127.0.0.1" in c_rec or "localhost" in c_rec):
                     sheet2_call_map[c_id] = (idx, c_transcript)
             
             if sheet2_call_map:
@@ -240,8 +247,33 @@ def sync_completed_calls_to_sheets(sheet):
                     if call_id in sheet2_call_map:
                         row_idx, current_transcript = sheet2_call_map[call_id]
                         recording_url = c.get("recording_url") or ""
+                        
+                        # Dynamic Vobiz lookup fallback if DB has no recording URL for completed calls
+                        if not recording_url and c.get("status") == "completed":
+                            from vobiz_client import find_recording_for_call
+                            try:
+                                logger.info(f"Querying Vobiz API directly for missing recording for completed call {call_id}")
+                                result = find_recording_for_call(c)
+                                if result and result.get("recording_url"):
+                                    recording_url = result["recording_url"]
+                                    update_call_record(
+                                        call_id,
+                                        vobiz_call_uuid=result.get("vobiz_call_uuid") or None,
+                                        vobiz_recording_id=result.get("vobiz_recording_id") or None,
+                                        recording_source="vobiz",
+                                        recording_url=recording_url,
+                                        recording_duration_ms=result.get("recording_duration_ms"),
+                                        recording_format=result.get("recording_format"),
+                                        recording_type=result.get("recording_type"),
+                                        event_message="Vobiz recording dynamically matched and backfilled during sync loop",
+                                        event_details=result,
+                                    )
+                                    logger.info(f"Dynamically updated DB with recording for call {call_id}")
+                            except Exception as ex:
+                                logger.error(f"Failed to query Vobiz for recording backfill for {call_id}: {ex}")
+
                         if recording_url:
-                            api_url = os.environ.get("LIVEKIT_CALL_API_URL", "https://livekit-agent-ur38zy-3ba7e4-173-212-216-156.sslip.io").rstrip("/")
+                            api_url = _clean_api_url()
                             public_rec_url = f"{api_url}/calls/{call_id}/recording"
                             logger.info(f"Backfilling recording URL for {call_id} in Sheet 2 row {row_idx}: {public_rec_url}")
                             try:
@@ -347,7 +379,7 @@ def sync_completed_calls_to_sheets(sheet):
         # Fetch recording and transcript from the call status store
         recording_url = c.get("recording_url") or ""
         if recording_url:
-            api_url = os.environ.get("LIVEKIT_CALL_API_URL", "http://127.0.0.1:8000").rstrip("/")
+            api_url = _clean_api_url()
             recording_url = f"{api_url}/calls/{call_id}/recording"
             
         transcript = c.get("transcript_text") or ""

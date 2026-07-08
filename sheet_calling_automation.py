@@ -209,25 +209,8 @@ def sync_completed_calls_to_sheets(sheet):
         logger.error(f"Failed to read from call status store: {err}")
         return
 
-    # Filter for unsynced calls initiated by sheets automation
-    unsynced_calls = []
-    for c in calls:
-        meta_dict = c.get("metadata") or {}
-            
-        if meta_dict.get("source") == "sheets_automation" and meta_dict.get("cid") and not meta_dict.get("synced"):
-            c["parsed_metadata"] = meta_dict
-            unsynced_calls.append(c)
-
-    if not unsynced_calls:
-        logger.info("No new completed call records to sync to Google Sheets.")
-        return
-
-    logger.info(f"Found {len(unsynced_calls)} call records to sync back to sheets.")
-    
-    sheet1 = sheet.get_worksheet(0)
-    sheet2 = sheet.get_worksheet(1)
-    
     # Backfill recording links for calls already synced to Sheet 2 but missing recording URLs
+    sheet2 = sheet.get_worksheet(1)
     try:
         sheet2_rows = sheet2.get_all_records()
     except Exception as e:
@@ -269,6 +252,23 @@ def sync_completed_calls_to_sheets(sheet):
                                     sheet2.update_cell(row_idx, transcript_col + 1, db_transcript)
                             except Exception as ex:
                                 logger.error(f"Failed to update Sheet 2 row {row_idx} for call {call_id}: {ex}")
+    
+    # Filter for unsynced calls initiated by sheets automation
+    unsynced_calls = []
+    for c in calls:
+        meta_dict = c.get("metadata") or {}
+            
+        if meta_dict.get("source") == "sheets_automation" and meta_dict.get("cid") and not meta_dict.get("synced"):
+            c["parsed_metadata"] = meta_dict
+            unsynced_calls.append(c)
+
+    if not unsynced_calls:
+        logger.info("No new completed call records to sync to Google Sheets.")
+        return
+
+    logger.info(f"Found {len(unsynced_calls)} call records to sync back to sheets.")
+    
+    sheet1 = sheet.get_worksheet(0)
     
     # Pre-cache Sheet 1 records for looking up row index of matching CID
     sheet1_headers = _headers(sheet1)

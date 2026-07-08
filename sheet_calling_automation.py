@@ -319,12 +319,18 @@ def sync_completed_calls_to_sheets(sheet):
         except Exception:
             formatted_call_time = call_time
 
+        # Get contact person name from call metadata or Sheet 1 matching row
+        contact_person = c["parsed_metadata"].get("contact_person") or ""
+        if not contact_person and matching_row is not None:
+            contact_person = matching_row.get("Contact person") or ""
+
         new_row = [
             client_comment,       # Client Comment
             next_action,          # Next Action
             next_action_date,     # Next Action Date
             next_action_time,     # Next Action Time
             cid,                  # CID
+            contact_person,       # Contact person
             formatted_call_time,  # Datetime
             recording_url,        # Recording
             transcript,           # Trasncript (with typo)

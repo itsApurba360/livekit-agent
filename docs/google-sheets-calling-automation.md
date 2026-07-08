@@ -71,14 +71,15 @@ The automation appends rows in this exact order:
 3. `Next Action Date (DD/MMYYYY)`
 4. `Next Action Time (IST)`
 5. `CID`
-6. `Datetime`
-7. `Recording`
-8. `Trasncript`
-9. `Actor`
-10. `Call ID`
-11. `Call Outcome`
-12. `Help Needed Notes`
-13. `Assigned To`
+6. `Contact person`
+7. `Datetime`
+8. `Recording`
+9. `Trasncript`
+10. `Actor`
+11. `Call ID`
+12. `Call Outcome`
+13. `Help Needed Notes`
+14. `Assigned To`
 
 The misspellings `DD/MMYYYY` and `Trasncript` are currently part of the sheet contract because the script reads/writes by those labels/positions.
 

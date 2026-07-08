@@ -227,6 +227,49 @@ def sync_completed_calls_to_sheets(sheet):
     sheet1 = sheet.get_worksheet(0)
     sheet2 = sheet.get_worksheet(1)
     
+    # Backfill recording links for calls already synced to Sheet 2 but missing recording URLs
+    try:
+        sheet2_rows = sheet2.get_all_records()
+    except Exception as e:
+        logger.error(f"Failed to read Sheet 2 for recording backfill: {e}")
+        sheet2_rows = []
+
+    if sheet2_rows:
+        sheet2_headers = _headers(sheet2)
+        header_to_idx = {h.strip(): idx for idx, h in enumerate(sheet2_headers)}
+        call_id_col = header_to_idx.get("Call ID")
+        rec_col = header_to_idx.get("Recording")
+        transcript_col = header_to_idx.get("Trasncript") or header_to_idx.get("Transcript")
+        
+        if call_id_col is not None and rec_col is not None:
+            sheet2_call_map = {}
+            for idx, r in enumerate(sheet2_rows, start=2):
+                c_id = str(r.get("Call ID") or "").strip()
+                c_rec = str(r.get("Recording") or "").strip()
+                c_transcript = str(r.get("Trasncript") or r.get("Transcript") or "").strip()
+                if c_id and not c_rec:
+                    sheet2_call_map[c_id] = (idx, c_transcript)
+            
+            if sheet2_call_map:
+                logger.info(f"Checking {len(sheet2_call_map)} logged calls in Sheet 2 for missing recordings...")
+                for c in calls:
+                    call_id = c["call_id"]
+                    if call_id in sheet2_call_map:
+                        row_idx, current_transcript = sheet2_call_map[call_id]
+                        recording_url = c.get("recording_url") or ""
+                        if recording_url:
+                            api_url = os.environ.get("LIVEKIT_CALL_API_URL", "https://livekit-agent-ur38zy-3ba7e4-173-212-216-156.sslip.io").rstrip("/")
+                            public_rec_url = f"{api_url}/calls/{call_id}/recording"
+                            logger.info(f"Backfilling recording URL for {call_id} in Sheet 2 row {row_idx}: {public_rec_url}")
+                            try:
+                                sheet2.update_cell(row_idx, rec_col + 1, public_rec_url)
+                                db_transcript = c.get("transcript_text") or ""
+                                if transcript_col is not None and not current_transcript and db_transcript:
+                                    logger.info(f"Backfilling transcript for {call_id} in Sheet 2 row {row_idx}")
+                                    sheet2.update_cell(row_idx, transcript_col + 1, db_transcript)
+                            except Exception as ex:
+                                logger.error(f"Failed to update Sheet 2 row {row_idx} for call {call_id}: {ex}")
+    
     # Pre-cache Sheet 1 records for looking up row index of matching CID
     sheet1_headers = _headers(sheet1)
     sheet1_rows = sheet1.get_all_records()

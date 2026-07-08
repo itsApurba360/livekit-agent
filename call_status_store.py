@@ -476,8 +476,8 @@ def get_call_record_by_vobiz_call_uuid(vobiz_call_uuid: str) -> Optional[dict[st
     with _connection() as conn:
         row = _execute(
             conn,
-            "SELECT call_id FROM calls WHERE vobiz_call_uuid = %s ORDER BY created_at DESC LIMIT 1",
-            (vobiz_call_uuid,),
+            "SELECT call_id FROM calls WHERE vobiz_call_uuid = %s OR sip_call_id = %s ORDER BY created_at DESC LIMIT 1",
+            (vobiz_call_uuid, vobiz_call_uuid),
         ).fetchone()
     if row is None:
         return None

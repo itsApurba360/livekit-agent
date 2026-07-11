@@ -202,6 +202,15 @@ def _ensure_schema(conn: Any) -> None:
         """
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_call_events_call_id ON call_events(call_id, id)")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT PRIMARY KEY,
+            value_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
 
 
 def _json_dumps(value: Optional[dict[str, Any]]) -> str:
@@ -539,3 +548,31 @@ def list_completed_call_records() -> list[dict[str, Any]]:
         ).fetchall()
 
     return [_record_from_row(row) for row in rows]
+
+
+def get_setting(key: str, default: Any = None) -> Any:
+    """Return a JSON-decoded app setting, or ``default`` if unset."""
+    with _connection() as conn:
+        row = _execute(
+            conn, "SELECT value_json FROM app_settings WHERE key = %s", (key,)
+        ).fetchone()
+    if row is None:
+        return default
+    try:
+        return json.loads(_row_to_dict(row)["value_json"])
+    except Exception:
+        return default
+
+
+def set_setting(key: str, value: Any) -> None:
+    """Upsert a JSON-encoded app setting."""
+    with _connection() as conn:
+        _execute(
+            conn,
+            """
+            INSERT INTO app_settings (key, value_json, updated_at)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (key) DO UPDATE SET value_json = EXCLUDED.value_json, updated_at = EXCLUDED.updated_at
+            """,
+            (key, json.dumps(value, ensure_ascii=False), now_iso()),
+        )

@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LiveKit Call Dashboard</title>
+  <link rel="stylesheet" href="/dashboard/static/css/dashboard.css" />
+</head>
+<body>
+  <section class="login-shell" id="loginShell">
+    <div class="card login-card">
+      <div class="eyebrow">LiveKit outbound telemetry</div>
+      <h1>Call Dashboard</h1>
+      <p class="subtitle">Sign in with the Call API token to view live call status.</p>
+      <form id="loginForm">
+        <div>
+          <label for="loginToken">Call API token</label>
+          <input id="loginToken" type="password" placeholder="Paste CALL_API_TOKEN" autocomplete="off" required />
+        </div>
+        <button id="loginSubmit" type="submit">Sign in</button>
+      </form>
+      <p class="login-error" id="loginError"></p>
+    </div>
+  </section>
+
+  <main class="shell hidden" id="appShell">
+    <section class="hero">
+      <div class="card intro">
+        <div class="intro-head">
+          <div>
+            <div class="eyebrow">LiveKit outbound telemetry</div>
+            <h1>Call Control Dashboard</h1>
+          </div>
+          <div class="server-clock">
+            <div class="clock-label">Server time (IST)</div>
+            <div class="clock-value" id="serverClock">--:--:--</div>
+          </div>
+        </div>
+        <p class="subtitle">Monitor Hermes-triggered PSTN calls from the shared PostgreSQL status store. Track dispatch, dialing, answered calls, carrier failures, SIP codes, and the exact event timeline for each call.</p>
+      </div>
+      <div class="card controls">
+        <div class="control-row">
+          <div>
+            <label for="limit">Rows</label>
+            <select id="limit"><option>25</option><option selected>100</option><option>250</option><option>500</option></select>
+          </div>
+          <div>
+            <label>&nbsp;</label>
+            <button id="refresh">Refresh</button>
+          </div>
+        </div>
+        <label class="check-row"><input id="auto" type="checkbox" checked /> Auto-refresh every 5s</label>
+        <div class="header-actions" style="margin-top: 14px;">
+          <button id="agentToggleBtn" style="font-weight: 900; border-radius: 15px; padding: 12px; border: 0; cursor: pointer; transition: all 0.2s; background: rgba(255,255,255,0.08); color: var(--text); flex: 1;">Checking Status...</button>
+        </div>
+        <div class="header-actions">
+          <button id="settingsBtn" class="btn-secondary" style="flex: 1; padding: 10px; font-size: 13px;">Settings</button>
+          <button id="logoutBtn" class="btn-danger" style="flex: 1;">Logout</button>
+        </div>
+        <div class="hint" id="lastUpdated">Waiting for data…</div>
+      </div>
+    </section>
+
+    <p class="error" id="errorBox"></p>
+
+    <section class="metrics">
+      <div class="card metric" style="--accent: var(--blue)"><div class="label">Total calls</div><div class="value" id="mTotal">—</div></div>
+      <div class="card metric" style="--accent: var(--cyan)"><div class="label">Live / dialing</div><div class="value" id="mLive">—</div></div>
+      <div class="card metric" style="--accent: var(--green)"><div class="label">Connected</div><div class="value" id="mConnected">—</div></div>
+      <div class="card metric" style="--accent: var(--red)"><div class="label">Failures</div><div class="value" id="mFailures">—</div></div>
+      <div class="card metric" style="--accent: var(--amber)"><div class="label">Busy</div><div class="value" id="mBusy">—</div></div>
+    </section>
+
+    <section class="grid">
+      <div class="card">
+        <div class="section-title"><h2>Recent calls</h2><span class="hint">Click a row for event history</span></div>
+        <div class="filter-bar">
+          <select id="filterStatus">
+            <option value="">All statuses</option>
+            <option value="live">Live / dialing</option>
+            <option value="connected">Connected</option>
+            <option value="failed">Failed</option>
+            <option value="idle">Idle / other</option>
+          </select>
+          <input id="filterSearch" type="text" placeholder="Search phone, purpose, or call ID…" />
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Status</th><th>Phone</th><th>Purpose</th><th>SIP</th><th>Reason</th><th>Updated</th><th>Call ID</th></tr></thead>
+            <tbody id="callsBody"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+      <aside class="card detail" id="detailPane">
+        <div class="empty">Select a call to inspect its SIP timeline.</div>
+      </aside>
+    </section>
+  </main>
+
+  <dialog id="transcriptModal">
+    <div class="modal-head">
+      <h3>Conversation Transcript</h3>
+      <button class="modal-close" onclick="document.getElementById('transcriptModal').close()">Close</button>
+    </div>
+    <div id="modalTranscriptText" style="white-space: pre-wrap; max-height: 450px; overflow-y: auto; font-family: inherit; line-height: 1.65; font-size: 15px; color: var(--text);"></div>
+  </dialog>
+
+  <dialog id="settingsModal">
+    <div class="modal-head">
+      <h3>Dashboard Settings</h3>
+      <button class="modal-close" onclick="document.getElementById('settingsModal').close()">Close</button>
+    </div>
+    <div class="modal-section">
+      <h4>Google Sheet source</h4>
+      <label for="spreadsheetUrl">Spreadsheet link</label>
+      <input id="spreadsheetUrl" type="text" placeholder="https://docs.google.com/spreadsheets/d/…" />
+      <button id="spreadsheetSave" class="btn-action" style="width: 100%; margin-top: 10px; padding: 10px;">Validate &amp; Save</button>
+      <div id="spreadsheetResult"></div>
+    </div>
+    <div class="modal-section">
+      <h4>Calling time window</h4>
+      <label class="check-row"><input id="windowEnabled" type="checkbox" /> Restrict automated AI calls to this window (IST)</label>
+      <div class="time-row" style="margin-top: 10px;">
+        <div>
+          <label for="windowStart">Start</label>
+          <input id="windowStart" type="time" value="10:00" />
+        </div>
+        <div>
+          <label for="windowEnd">End</label>
+          <input id="windowEnd" type="time" value="18:30" />
+        </div>
+      </div>
+      <button id="windowSave" class="btn-action" style="width: 100%; margin-top: 10px; padding: 10px;">Save window</button>
+      <div id="windowResult"></div>
+    </div>
+  </dialog>
+
+  <script src="/dashboard/static/js/dashboard.js"></script>
+</body>
+</html>

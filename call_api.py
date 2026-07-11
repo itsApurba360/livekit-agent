@@ -10,20 +10,23 @@ logger = logging.getLogger("call-api")
 from typing import Any, Optional
 from urllib.parse import parse_qs
 
-from call_dashboard import dashboard_html
 from call_outcomes import failure_status_for_reason, sip_failure_reason
 from call_status_store import (
     create_call_record,
     get_call_record,
     get_call_record_by_vobiz_call_uuid,
+    get_setting,
     list_active_call_records,
     list_call_records,
     now_iso,
+    set_setting,
     update_call_record,
 )
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, Query, Request, BackgroundTasks
 from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 from livekit import api
 from pydantic import BaseModel, Field, field_validator
 from vobiz_client import VobizRestClient, find_recording_for_call
@@ -38,6 +41,10 @@ AGENT_NAME = os.environ.get("LIVEKIT_AGENT_NAME") or os.environ.get("AGENT_NAME"
 
 
 app = FastAPI(title="LiveKit Call Control API", version="0.1.0")
+
+DASHBOARD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard")
+dashboard_templates = Jinja2Templates(directory=os.path.join(DASHBOARD_DIR, "templates"))
+app.mount("/dashboard/static", StaticFiles(directory=os.path.join(DASHBOARD_DIR, "static")), name="dashboard-static")
 
 
 def _call_api_token() -> str:
@@ -230,8 +237,100 @@ def health() -> dict[str, bool]:
 
 
 @app.get("/dashboard", response_class=HTMLResponse)
-def dashboard() -> HTMLResponse:
-    return HTMLResponse(dashboard_html())
+def dashboard(request: Request) -> HTMLResponse:
+    return dashboard_templates.TemplateResponse(request, "dashboard.html", {})
+
+
+@app.get("/auth/verify")
+def verify_auth(authorization: Optional[str] = Header(default=None)) -> dict[str, bool]:
+    _require_auth(authorization)
+    return {"ok": True}
+
+
+class SpreadsheetSettingsRequest(BaseModel):
+    spreadsheet_url: str = Field(..., description="Google Sheets URL or raw spreadsheet ID")
+
+
+@app.get("/settings/spreadsheet")
+def get_spreadsheet_settings(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+    _require_auth(authorization)
+    return {
+        "ok": True,
+        "spreadsheet_url": get_setting("spreadsheet_url"),
+        "spreadsheet_id": get_setting("spreadsheet_id"),
+        "validated_at": get_setting("spreadsheet_validated_at"),
+        "warnings": get_setting("spreadsheet_warnings", []),
+    }
+
+
+@app.post("/settings/spreadsheet")
+def save_spreadsheet_settings(
+    request: SpreadsheetSettingsRequest,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    _require_auth(authorization)
+    from sheet_calling_automation import parse_spreadsheet_id, validate_spreadsheet
+
+    spreadsheet_id = parse_spreadsheet_id(request.spreadsheet_url)
+    if not spreadsheet_id:
+        raise HTTPException(status_code=422, detail="Could not parse a spreadsheet ID from that link")
+
+    result = validate_spreadsheet(spreadsheet_id)
+    if not result["ok"]:
+        raise HTTPException(status_code=422, detail="; ".join(result["errors"]))
+
+    set_setting("spreadsheet_url", request.spreadsheet_url.strip())
+    set_setting("spreadsheet_id", spreadsheet_id)
+    set_setting("spreadsheet_validated_at", now_iso())
+    set_setting("spreadsheet_warnings", result["warnings"])
+    return {
+        "ok": True,
+        "spreadsheet_id": spreadsheet_id,
+        "warnings": result["warnings"],
+    }
+
+
+class CallingWindowRequest(BaseModel):
+    enabled: bool
+    start: str = Field(..., description="HH:MM, IST")
+    end: str = Field(..., description="HH:MM, IST")
+
+    @field_validator("start", "end")
+    @classmethod
+    def validate_time_format(cls, value: str) -> str:
+        from datetime import datetime as _dt
+
+        try:
+            _dt.strptime(value, "%H:%M")
+        except ValueError:
+            raise ValueError("Time must be in HH:MM format")
+        return value
+
+
+@app.get("/settings/calling-window")
+def get_calling_window_settings(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+    _require_auth(authorization)
+    return {
+        "ok": True,
+        "enabled": get_setting("calling_window_enabled", False),
+        "start": get_setting("calling_window_start", "10:00"),
+        "end": get_setting("calling_window_end", "18:30"),
+    }
+
+
+@app.post("/settings/calling-window")
+def save_calling_window_settings(
+    request: CallingWindowRequest,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    _require_auth(authorization)
+    if request.start >= request.end:
+        raise HTTPException(status_code=422, detail="Window start must be earlier than end")
+
+    set_setting("calling_window_enabled", request.enabled)
+    set_setting("calling_window_start", request.start)
+    set_setting("calling_window_end", request.end)
+    return {"ok": True, "enabled": request.enabled, "start": request.start, "end": request.end}
 
 
 def _parse_byte_range(range_header: str, total: int) -> tuple[Optional[int], Optional[int]]:

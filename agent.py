@@ -46,13 +46,7 @@ call_context_helpers.set_agent_config(agent_config)
 DEFAULT_TRANSFER_NUMBER = os.environ.get("DEFAULT_TRANSFER_NUMBER")
 SIP_DOMAIN = os.environ.get("VOBIZ_SIP_DOMAIN")
 AGENT_NAME = os.environ.get("LIVEKIT_AGENT_NAME") or os.environ.get("AGENT_NAME") or "outbound-caller"
-SILENCE_TIMEOUT_SECONDS = 30.0
-
-DEFAULT_SUPPORT_UNVERIFIED_RULES = """- Customer lookup, WhatsApp, PDF, and OTP verification tools are disabled for now.
-- Do not ask for OTP or WhatsApp verification.
-- Use only outbound campaign scheduling tools and `end_call`."""
-
-DEFAULT_SUPPORT_VERIFIED_RULES = DEFAULT_SUPPORT_UNVERIFIED_RULES
+SILENCE_TIMEOUT_SECONDS = 10.0
 
 
 CallContext = call_context_helpers.CallContext
@@ -253,7 +247,38 @@ class StandaloneAgent(Agent):
             instructions=instructions,
             tools=tools,
         )
+def _handle_startup_errors(fnc: Any) -> Any:
+    import functools
+    @functools.wraps(fnc)
+    async def wrapper(ctx: agents.JobContext, *args: Any, **kwargs: Any) -> Any:
+        c_id = None
+        try:
+            job_meta = _load_json_dict(getattr(ctx.job, "metadata", None))
+            room_meta = _load_json_dict(getattr(ctx.room, "metadata", None))
+            c_id = (job_meta or {}).get("call_id") or (room_meta or {}).get("call_id")
+        except Exception:
+            pass
 
+        try:
+            return await fnc(ctx, *args, **kwargs)
+        except Exception as err:
+            logger.exception("Exception in agent worker entrypoint startup: %s", err)
+            if c_id:
+                try:
+                    update_call_record(
+                        c_id,
+                        status="dispatch_failed",
+                        reason="dispatch_error",
+                        error=str(err),
+                        event_message=f"Agent process crashed during startup: {err}",
+                    )
+                except Exception as db_err:
+                    logger.error("Failed to write crash status to database: %s", db_err)
+            raise err
+    return wrapper
+
+
+@_handle_startup_errors
 async def entrypoint(ctx: agents.JobContext):
     """
     Main entrypoint for the REST-decoupled agent worker.
@@ -292,7 +317,6 @@ async def entrypoint(ctx: agents.JobContext):
     # If lead or unknown -> launch Sales Agent (Nandini)
     caller_status = caller_info.get("status")
     customer_id = caller_info.get("customer_id")
-    lead_id = caller_info.get("lead_id")
     contact_person = config_dict.get("contact_person") or ""
     company_owner = config_dict.get("customer_name") or config_dict.get("name") or caller_info.get("name") or "जी"
     contact_person_name = contact_person if contact_person else company_owner
@@ -328,22 +352,17 @@ async def entrypoint(ctx: agents.JobContext):
         initial_greeting = initial_greeting_template
 
     # Resolve dynamic system prompt compilation
-    def get_compiled_prompt(is_verified: bool = False) -> str:
+    def get_compiled_prompt() -> str:
         nonlocal system_prompt_template, contact_person_name, company_owner, company_name, customer_id, call_context, initial_greeting
         format_dict = {
             "contact_person_name": contact_person_name,
             "company_owner": company_owner,
             "company_name": company_name,
-            "verification_rules": DEFAULT_SUPPORT_VERIFIED_RULES if is_verified else DEFAULT_SUPPORT_UNVERIFIED_RULES
         }
         try:
             prompt_base = system_prompt_template.format(**{k: v for k, v in format_dict.items() if f"{{{k}}}" in system_prompt_template})
         except Exception:
             prompt_base = system_prompt_template
-
-        if "{verification_rules}" not in prompt_base and agent_type == "Support":
-            rules_addon = DEFAULT_SUPPORT_VERIFIED_RULES if is_verified else DEFAULT_SUPPORT_UNVERIFIED_RULES
-            prompt_base += f"\n\nSecurity Rules:\n{rules_addon}"
 
         if call_context.is_outbound:
             prompt_base += f"\n\nOutbound Calling Context:"
@@ -409,7 +428,7 @@ async def entrypoint(ctx: agents.JobContext):
 
         return prompt_base
 
-    system_prompt = get_compiled_prompt(is_verified=False)
+    system_prompt = get_compiled_prompt()
 
     # Setup provider configurations
     provider = agent_config.get("provider", "Google")
@@ -437,7 +456,7 @@ async def entrypoint(ctx: agents.JobContext):
         chat_ctx = agent_instance.chat_ctx.copy()
         
         # In-place prompt compilation swap
-        new_system_prompt = get_compiled_prompt(is_verified=True)
+        new_system_prompt = get_compiled_prompt()
         for msg in chat_ctx.messages():
             if msg.role == "system":
                 msg.content = new_system_prompt
@@ -508,7 +527,7 @@ async def entrypoint(ctx: agents.JobContext):
     fnc_ctx.session = session
 
     agent_tools = list(fnc_ctx.function_tools.values())
-    system_prompt = get_compiled_prompt(is_verified=fnc_ctx.is_verified)
+    system_prompt = get_compiled_prompt()
 
     # Start the realtime session early, but keep outbound audio input detached
     # until the PSTN participant has answered.

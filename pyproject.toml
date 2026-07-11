@@ -19,6 +19,7 @@ dependencies = [
     "gspread",
     "google-auth",
     "psycopg[binary]",
+    "jinja2",
 ]
 
 [dependency-groups]

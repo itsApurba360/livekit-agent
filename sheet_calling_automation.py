@@ -85,14 +85,89 @@ def _next_retry_datetime(reason: str | None, now: datetime) -> datetime:
 def _is_human_handoff(next_action: str) -> bool:
     return next_action.strip().lower() == "human"
 
-def get_google_sheets_client():
+SPREADSHEET_ID_RE = re.compile(r"/spreadsheets/d/([a-zA-Z0-9-_]+)")
+REQUIRED_SHEET1_HEADERS = ["CID", "Data Received Status"]
+
+
+def parse_spreadsheet_id(url_or_id: str) -> str:
+    """Extract a spreadsheet ID from a full Google Sheets URL, or pass through a raw ID."""
+    value = (url_or_id or "").strip()
+    match = SPREADSHEET_ID_RE.search(value)
+    if match:
+        return match.group(1)
+    return value
+
+
+def validate_spreadsheet(spreadsheet_id: str) -> dict:
+    """Open the sheet with the configured service-account creds and check it has the
+    columns the automation loop needs. Returns {"ok", "errors", "warnings"}."""
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    try:
+        client, _ = get_google_sheets_client(spreadsheet_id_override=spreadsheet_id)
+        sheet = client.open_by_key(spreadsheet_id)
+    except Exception as e:
+        return {"ok": False, "errors": [f"Could not open spreadsheet: {e}"], "warnings": []}
+
+    worksheets = sheet.worksheets()
+    if len(worksheets) < 2:
+        errors.append("Spreadsheet must have at least two sheets (client list and call log).")
+        return {"ok": False, "errors": errors, "warnings": warnings}
+
+    sheet1_headers = _headers(worksheets[0])
+    sheet2_headers = _headers(worksheets[1])
+
+    missing_required = [h for h in REQUIRED_SHEET1_HEADERS if h not in sheet1_headers]
+    if missing_required:
+        errors.append(f"Sheet1 is missing required column(s): {', '.join(missing_required)}")
+
+    missing_workflow = [h for h in SHEET1_WORKFLOW_HEADERS if h not in sheet1_headers]
+    if missing_workflow:
+        warnings.append(f"Sheet1 is missing workflow column(s): {', '.join(missing_workflow)}")
+
+    missing_extra = [h for h in SHEET2_EXTRA_HEADERS if h not in sheet2_headers]
+    if missing_extra:
+        warnings.append(f"Sheet2 is missing column(s): {', '.join(missing_extra)}")
+
+    return {"ok": not errors, "errors": errors, "warnings": warnings}
+
+
+def _within_calling_window(now: datetime) -> tuple[bool, str]:
+    """Check the configured IST calling-time window. ``now`` must be a naive
+    IST datetime. Returns (allowed, reason)."""
+    from call_status_store import get_setting
+
+    if not get_setting("calling_window_enabled", False):
+        return True, "calling window not enabled"
+
+    start_str = get_setting("calling_window_start") or "00:00"
+    end_str = get_setting("calling_window_end") or "23:59"
+    try:
+        start_time = datetime.strptime(start_str, "%H:%M").time()
+        end_time = datetime.strptime(end_str, "%H:%M").time()
+    except ValueError:
+        return True, "calling window misconfigured, ignoring"
+
+    current_time = now.time()
+    if start_time <= current_time <= end_time:
+        return True, f"within window {start_str}-{end_str} IST"
+    return False, f"outside window {start_str}-{end_str} IST (now {current_time.strftime('%H:%M')} IST)"
+
+
+def get_google_sheets_client(spreadsheet_id_override: str | None = None):
     creds_path = os.environ.get("GOOGLE_SHEETS_CREDS_PATH", ".google_sheets_creds.json")
-    spreadsheet_id = os.environ.get("GOOGLE_SHEETS_SPREADSHEET_ID")
     creds_json = os.environ.get("GOOGLE_SHEETS_CREDS_JSON")
-    
+
+    if spreadsheet_id_override:
+        spreadsheet_id = spreadsheet_id_override
+    else:
+        from call_status_store import get_setting
+        spreadsheet_id = get_setting("spreadsheet_id") or os.environ.get("GOOGLE_SHEETS_SPREADSHEET_ID")
+
     if not spreadsheet_id:
-        raise ValueError("GOOGLE_SHEETS_SPREADSHEET_ID environment variable is missing")
-        
+        raise ValueError("No spreadsheet configured. Set it from the dashboard settings or GOOGLE_SHEETS_SPREADSHEET_ID.")
+
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive"
@@ -495,6 +570,13 @@ async def run_sheets_automation(ignore_schedule: bool = False):
     if check_stop_requested():
         return
 
+    ist = timezone(timedelta(hours=5, minutes=30))
+    now_ist = datetime.now(ist).replace(tzinfo=None)
+    window_ok, window_reason = _within_calling_window(now_ist)
+    if not window_ok:
+        logger.info(f"Skipping new AI call placement: {window_reason}")
+        return
+
     # Second, scan Sheet 1 for new calls to place
     sheet1 = sheet.get_worksheet(0)
     sheet2 = sheet.get_worksheet(1)
@@ -512,10 +594,9 @@ async def run_sheets_automation(ignore_schedule: bool = False):
         return
 
     logger.info(f"Fetched {len(sheet1_rows)} clients and {len(sheet2_rows)} logs.")
-    
-    ist = timezone(timedelta(hours=5, minutes=30))
-    now = datetime.now(ist).replace(tzinfo=None)
-    
+
+    now = now_ist
+
     for row in sheet1_rows:
         if check_stop_requested():
             break

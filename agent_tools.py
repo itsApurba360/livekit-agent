@@ -13,6 +13,7 @@ END_CALL_MAX_SPEECH_SECONDS = 8.0
 CALLBACK_OFFICE_START = dt_time(10, 0)
 CALLBACK_OFFICE_END = dt_time(18, 0)
 CALLBACK_SLOT_MINUTES = 30
+ITR_FOLLOWUP_TIME = "11:00"
 CALLBACK_IST = timezone(timedelta(hours=5, minutes=30))
 CALLBACK_HOLIDAYS_2026 = {
     "2026-01-01": "New Year",
@@ -178,6 +179,13 @@ def _callback_holiday_name(schedule: datetime) -> Optional[str]:
     return CALLBACK_HOLIDAYS_2026.get(schedule.date().isoformat())
 
 
+def _promise_followup_schedule(promised: datetime) -> tuple[str, str]:
+    followup = promised + timedelta(days=1)
+    while followup.weekday() == 6 or _callback_holiday_name(followup):
+        followup += timedelta(days=1)
+    return followup.strftime("%d/%m/%Y"), ITR_FOLLOWUP_TIME
+
+
 def _round_up_callback_slot(schedule: datetime) -> datetime:
     minute = schedule.minute
     extra = minute % CALLBACK_SLOT_MINUTES
@@ -284,7 +292,12 @@ class CustomerQueryTools(llm.ToolContext):
     Legacy Frappe/WhatsApp methods remain callable in Python but are not exposed
     to the model while outbound-call management is the active scope.
     """
-    ACTIVE_TOOL_NAMES = {"schedule_human_callback", "schedule_ai_followup", "end_call"}
+    ACTIVE_TOOL_NAMES = {
+        "record_itr_collection_outcome",
+        "schedule_human_callback",
+        "schedule_ai_followup",
+        "end_call",
+    }
 
     def __init__(self, client: Optional[Any] = None, customer_id: Optional[str] = None, phone_number: Optional[str] = None, on_verify_success: Optional[Callable] = None, session: Optional[Any] = None, ctx: Optional[Any] = None, call_id: Optional[str] = None):
         super().__init__(tools=[])
@@ -759,6 +772,103 @@ class CustomerQueryTools(llm.ToolContext):
             
         return "Failed to end call: context not available."
 
+    @llm.function_tool(description="Record the structured ITR document-collection outcome. Use receipt_status Received, Not Received, or Unclear; promised_date must be DD/MM/YYYY; delivery_mode must be WhatsApp, Email, or Office Visit. A confirmed promised date automatically schedules the next AI follow-up for 11:00 AM IST on the next working day. Record issues before scheduling a human callback.")
+    async def record_itr_collection_outcome(
+        self,
+        receipt_status: str,
+        promised_date: Optional[str] = None,
+        delivery_mode: Optional[str] = None,
+        issue_help_required: Optional[str] = None,
+    ):
+        receipt_key = re.sub(r"[\s_-]+", " ", (receipt_status or "").strip().lower())
+        receipt_labels = {
+            "received": "Received",
+            "yes": "Received",
+            "not received": "Not Received",
+            "no": "Not Received",
+            "unclear": "Unclear",
+            "unknown": "Unclear",
+        }
+        receipt_label = receipt_labels.get(receipt_key)
+        if not receipt_label:
+            return "Receipt status must be Received, Not Received, or Unclear."
+
+        mode_label = ""
+        if delivery_mode:
+            mode_key = re.sub(r"[\s_-]+", " ", delivery_mode.strip().lower())
+            mode_labels = {
+                "whatsapp": "WhatsApp",
+                "email": "Email",
+                "office": "Office Visit",
+                "office visit": "Office Visit",
+            }
+            mode_label = mode_labels.get(mode_key, "")
+            if not mode_label:
+                return "Delivery mode must be WhatsApp, Email, or Office Visit."
+
+        promised_label = ""
+        followup_date = ""
+        if promised_date:
+            try:
+                promised = datetime.strptime(promised_date.strip(), "%d/%m/%Y")
+            except ValueError:
+                return "Promised date must use DD/MM/YYYY."
+            if promised.date() < _now_ist().date():
+                return "Promised date cannot be in the past."
+            if not mode_label:
+                return "Ask how the customer will send the documents, then record the delivery mode."
+            promised_label = promised.strftime("%d/%m/%Y")
+            followup_date, _ = _promise_followup_schedule(promised)
+
+        if not self.call_id:
+            return "Failed to record ITR outcome: Call ID not available."
+
+        issue = (issue_help_required or "").strip()
+        if receipt_label != "Received" and not issue:
+            issue = "WhatsApp document list not received; team resend and contact requested."
+
+        try:
+            record = get_call_record(self.call_id)
+            metadata = record.get("metadata") or {} if record else {}
+            metadata.update({
+                "campaign_type": "itr",
+                "whatsapp_receipt_status": receipt_label,
+                "promised_date": promised_label,
+                "delivery_mode": mode_label,
+                "issue_help_required": issue,
+            })
+
+            if issue:
+                metadata["next_action"] = "Human"
+                metadata.pop("next_action_date", None)
+                metadata.pop("next_action_time", None)
+                metadata["help_needed_notes"] = issue
+                metadata["client_comment"] = f"WhatsApp status: {receipt_label}. {issue}"
+            elif promised_label:
+                metadata["next_action"] = "AI Call"
+                metadata["next_action_date"] = followup_date
+                metadata["next_action_time"] = ITR_FOLLOWUP_TIME
+                metadata["client_comment"] = (
+                    f"WhatsApp list received; documents promised by {promised_label} via {mode_label}."
+                )
+            else:
+                metadata["client_comment"] = f"WhatsApp status: {receipt_label}."
+
+            update_call_record(
+                self.call_id,
+                metadata=metadata,
+                event_message="Recorded ITR document collection outcome",
+            )
+            if promised_label and not issue:
+                return (
+                    f"ITR outcome recorded. Conditional AI follow-up scheduled for "
+                    f"{followup_date} at {ITR_FOLLOWUP_TIME} IST."
+                )
+            return "ITR outcome recorded for human follow-up."
+        except Exception as e:
+            logger.error(f"Failed to record ITR outcome for {self.call_id}: {e}")
+            return f"Error recording ITR outcome in database: {str(e)}."
+
     @llm.function_tool(description="Schedule a follow-up callback with a human representative. Use DD/MM/YYYY and HH:MM IST, or time_str like '+5 minutes' for requests such as 'call me after 5 minutes'; relative minutes are resolved in IST. Call once with confirmed=false to check the slot and ask the customer to confirm; only call with confirmed=true after the customer clearly agrees. Office hours are 10:00 to 18:00 IST.")
     async def schedule_human_callback(self, date_str: str, time_str: str, client_notes: Optional[str] = None, confirmed: bool = False):
         """
@@ -781,6 +891,7 @@ class CustomerQueryTools(llm.ToolContext):
                 metadata["next_action"] = "Human"
                 metadata["next_action_date"] = date_str
                 metadata["next_action_time"] = time_str
+                metadata["callback_time"] = f"{date_str} {time_str} IST"
                 if client_notes:
                     metadata["client_comment"] = client_notes
                     metadata["help_needed_notes"] = client_notes

@@ -20,6 +20,7 @@ STOP_FLAG = "agent_stop.flag"
 DEFAULT_MAX_AI_ATTEMPTS = 3
 
 SHEET1_WORKFLOW_HEADERS = [
+    "Campaign Type",
     "Workflow Status",
     "AI Enabled",
     "Assigned To",
@@ -38,6 +39,11 @@ SHEET2_EXTRA_HEADERS = [
     "Call Outcome",
     "Help Needed Notes",
     "Assigned To",
+    "WhatsApp Received",
+    "Promised Date",
+    "Delivery Mode",
+    "Help/Issue",
+    "Callback Time",
 ]
 
 def check_stop_requested() -> bool:
@@ -84,6 +90,15 @@ def _next_retry_datetime(reason: str | None, now: datetime) -> datetime:
 
 def _is_human_handoff(next_action: str) -> bool:
     return next_action.strip().lower() == "human"
+
+def _normalize_campaign_type(value) -> str | None:
+    normalized = re.sub(r"[\s_-]+", " ", str(value or "gst").strip().lower())
+    return {
+        "gst": "gst",
+        "income tax": "itr",
+        "income tax return": "itr",
+        "itr": "itr",
+    }.get(normalized)
 
 SPREADSHEET_ID_RE = re.compile(r"/spreadsheets/d/([a-zA-Z0-9-_]+)")
 REQUIRED_SHEET1_HEADERS = ["CID", "Data Received Status"]
@@ -234,10 +249,25 @@ async def trigger_outbound_call(row: dict) -> bool:
     if not mobile:
         logger.warning(f"Row for CID {row.get('CID')} lacks a phone number.")
         return False
+
+    campaign_type = _normalize_campaign_type(row.get("Campaign Type"))
+    if not campaign_type:
+        logger.error(
+            "Row for CID %s has unsupported Campaign Type %r; use GST or ITR.",
+            row.get("CID"),
+            row.get("Campaign Type"),
+        )
+        return False
+
+    default_purpose = (
+        "Income Tax Return document collection"
+        if campaign_type == "itr"
+        else "GST filing documents collection"
+    )
         
     payload = {
         "phone_number": mobile,
-        "purpose": str(row.get("Purpose/Prompt") or "GST filing documents collection"),
+        "purpose": str(row.get("Purpose/Prompt") or default_purpose),
         "agent_type": "support",
         "customer_name": str(row.get("Owner name") or ""),
         "company_name": str(row.get("Company Name") or ""),
@@ -246,7 +276,8 @@ async def trigger_outbound_call(row: dict) -> bool:
         "requested_by": "sheets_automation",
         "metadata": {
             "cid": str(row.get("CID")),
-            "source": "sheets_automation"
+            "source": "sheets_automation",
+            "campaign_type": campaign_type,
         }
     }
     language = str(row.get("Language") or "").strip()
@@ -489,6 +520,11 @@ def sync_completed_calls_to_sheets(sheet):
             status,               # Call Outcome
             help_needed_notes,    # Help Needed Notes
             current_assignee,     # Assigned To
+            c["parsed_metadata"].get("whatsapp_receipt_status", ""),  # WhatsApp Received
+            c["parsed_metadata"].get("promised_date", ""),           # Promised Date
+            c["parsed_metadata"].get("delivery_mode", ""),           # Delivery Mode
+            c["parsed_metadata"].get("issue_help_required", ""),     # Help/Issue
+            c["parsed_metadata"].get("callback_time", ""),           # Callback Time
         ]
         
         try:

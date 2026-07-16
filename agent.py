@@ -39,6 +39,10 @@ for key in ["system_prompt", "initial_greeting", "inbound_initial_greeting", "ou
     if key not in agent_config["support_agent"]:
         raise KeyError(f"Missing required configuration key: 'support_agent.{key}' in agent_config.json")
 
+for campaign_type in ("gst", "itr"):
+    if campaign_type not in agent_config.get("campaign_prompts", {}):
+        raise KeyError(f"Missing required configuration key: 'campaign_prompts.{campaign_type}' in agent_config.json")
+
 logger.info("Successfully loaded agent configurations from agent_config.json.")
 call_context_helpers.set_agent_config(agent_config)
 
@@ -322,6 +326,7 @@ async def entrypoint(ctx: agents.JobContext):
     contact_person_name = contact_person if contact_person else company_owner
     company_name = config_dict.get("company_name") or config_dict.get("company") or caller_info.get("company") or "हमारी कंपनी"
     gender = (config_dict.get("gender") or "").strip().lower()
+    campaign_type = str(config_dict.get("campaign_type") or "gst").strip().lower()
     customer_id = config_dict.get("customer_id") or config_dict.get("cid") or caller_info.get("customer_id")
 
     agent_type = _select_agent_type(config_dict, caller_status)
@@ -377,7 +382,7 @@ async def entrypoint(ctx: agents.JobContext):
                     prompt_base += "\n- Address them respectfully as male (use masculine verbs like 'कैसे हैं आप' or address as 'सर')."
 
         if customer_id:
-            prompt_base += f"\n\nThe current outbound campaign row is linked to Customer ID: '{customer_id}'. Customer lookup and WhatsApp/PDF tools are disabled for now; use only scheduling or end-call tools."
+            prompt_base += f"\n\nThe current outbound campaign row is linked to Customer ID: '{customer_id}'. Customer lookup and WhatsApp/PDF tools are disabled for now; use only campaign outcome, scheduling, or end-call tools."
         else:
             prompt_base += "\n\nNo Customer is currently linked to this outbound call. Customer lookup tools are disabled for now; continue with the call purpose and use only scheduling or end-call tools."
 
@@ -415,14 +420,11 @@ async def entrypoint(ctx: agents.JobContext):
         is_sheet_campaign = call_context.requested_by == "sheets_automation"
         if is_sheet_campaign:
             current_date_str = now_ist.strftime("%d/%m/%Y")
-            prompt_base += (
-                f"\n\n--- CAMPAIGN RULES: DOCUMENT COLLECTION & FOLLOW-UP (Only apply after greeting turn) ---\n"
-                f"- After the initial greeting turn is complete and the customer has responded, ask the customer if their documents are ready.\n"
-                f"- If they are ready, ask when they will send them. Once they provide a date or date and time, thank them politely and hang up using the `end_call` tool. Do NOT schedule any follow-up or human callback in this case.\n"
-                f"- If they are not ready, or if they mention any blocker or need help, ask them what specific help/query they have. Collect their query, ask when they would be free for a callback from a human expert, schedule a human callback using `schedule_human_callback` with the callback time and the query in notes, and then hang up using `end_call`.\n"
-                f"- Never ask the customer if they want an AI call or human call. Never mention these options.\n"
-                f"- The current date is {current_date_str}. Convert relative dates like 'tomorrow' to actual dates (DD/MM/YYYY) for scheduling.\n"
-            )
+            campaign_prompt = agent_config["campaign_prompts"].get(campaign_type)
+            if not campaign_prompt:
+                logger.warning("Unknown campaign type %r; using GST campaign rules.", campaign_type)
+                campaign_prompt = agent_config["campaign_prompts"]["gst"]
+            prompt_base += f"\n\n{campaign_prompt.format(current_date=current_date_str)}\n"
 
         prompt_base += f"\n\n{_call_context_prompt(call_context)}"
 

@@ -6,7 +6,7 @@ Current deployable pieces:
 
 - `agent.py` — LiveKit conversation worker.
 - `call_api.py` — authenticated call-control API for Hermes/external automations, dashboard, recordings, and call status.
-- `sheet_calling_automation.py` — Google Sheets driven outbound GST/document-collection campaign loop.
+- `sheet_calling_automation.py` — Google Sheets driven outbound GST and ITR document-collection campaign loop.
 - `web_ui_server.py` — local browser sandbox for direct voice-agent testing.
 - `integrations/hermes/livekit-caller/` — Hermes plugin for `make_phone_call` and call-status lookup.
 

@@ -705,7 +705,9 @@ def _call_context_prompt(call_context: CallContext) -> str:
         lines.append(
             "- This is an outbound call placed by LSA Office. The customer or lead did not call us in this session. "
             f"Greet the callee when the call connects. Introduce yourself as {agent_config.get('support_agent', {}).get('name', 'Nandini')} from LSA Office. "
-            "Open with a short greeting, then immediately explain the reason/purpose of the call in simple, polite, spoken Hinglish (or natural conversational language). "
+            "Open with a very short greeting (one short line), then state the reason/purpose in one short line of simple spoken Hinglish. "
+            "Keep every turn extremely short: at most 1–2 short sentences, one question max, then wait. Never monologue. "
+            "Do NOT ask how they are or other small-talk questions after hello. "
             "Use the call purpose above as the reason when it is present; do not invent a different reason. "
             "Do NOT state the call purpose verbatim; instead, interpret and simplify it so it sounds natural and conversational to the customer. "
             "If you hear a voicemail or answering-machine greeting, wait for the greeting or beep to finish, leave one brief relevant message from LSA Office using the call purpose, do not ask questions, and then call the end_call tool."

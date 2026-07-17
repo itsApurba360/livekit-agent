@@ -10,7 +10,6 @@ dependencies = [
     "livekit-plugins-openai",
     "livekit-plugins-google",
     "livekit-plugins-ai-coustics",
-    "livekit-plugins-silero",
     "requests",
     "python-dotenv",
     "certifi",

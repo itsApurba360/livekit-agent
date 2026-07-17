@@ -13,6 +13,12 @@ from livekit import agents, api
 from livekit.agents import AgentSession, Agent
 from livekit.agents.voice.room_io import RoomOptions, AudioInputOptions
 from typing import Any, Optional
+from livekit.plugins import openai, google
+try:
+    from livekit.plugins import ai_coustics
+except ImportError:
+    ai_coustics = None
+
 
 # Import local decoupled modules
 import agent_call_context as call_context_helpers
@@ -288,8 +294,6 @@ async def entrypoint(ctx: agents.JobContext):
     Main entrypoint for the REST-decoupled agent worker.
     Handles both inbound (PSTN/web) and outbound (dial-out) calls.
     """
-    from livekit.plugins import openai, google
-
     logger.info(f"Connecting to room: {ctx.room.name}")
 
     # 1. Parse metadata. Room metadata can override dispatch metadata.
@@ -397,7 +401,7 @@ async def entrypoint(ctx: agents.JobContext):
         if preferred_language:
             prompt_base += (
                 f"\n- The campaign sheet says the customer's preferred language is {preferred_language}. "
-                f"Start the conversation in {preferred_language}. Specifically, translate your initial greeting ('{initial_greeting}') into {preferred_language} and use that translation as your greeting on the user's first utterance. "
+                f"Start the conversation in {preferred_language}. Specifically, translate your initial greeting ('{initial_greeting}') into {preferred_language} and use that translation as your opening greeting. "
                 f"This overrides any other instruction telling you to say the greeting in Hindi/Hinglish. "
                 "If the customer responds in another language, switch to the customer's language."
             )
@@ -535,12 +539,10 @@ async def entrypoint(ctx: agents.JobContext):
     # until the PSTN participant has answered.
     nc_option = None
     if agent_config.get("noise_cancellation", False):
-        try:
-            from livekit.plugins import ai_coustics
-
+        if ai_coustics is not None:
             nc_option = ai_coustics.audio_enhancement(model=ai_coustics.EnhancerModel.QUAIL_VF_S)
-        except ImportError as err:
-            logger.warning("Noise cancellation disabled; ai_coustics plugin unavailable: %s", err)
+        else:
+            logger.warning("Noise cancellation disabled; ai_coustics plugin unavailable")
     
     agent_instance = StandaloneAgent(instructions=system_prompt, tools=agent_tools)
     if "3.1" in model and provider == "Google":
@@ -625,10 +627,10 @@ async def entrypoint(ctx: agents.JobContext):
             instructions=instructions
         )
     else:
-        if call_context.is_outbound:
-            logger.info("Outbound call: model 3.1 Live does not support startup greeting via generate_reply. Waiting for callee to speak first.")
-        else:
-            logger.info("Inbound call: model 3.1 Live does not support startup greeting via generate_reply. Waiting for caller to speak first.")
+        logger.info(
+            "Model 3.1 Live does not support startup greeting via generate_reply; "
+            "opening line relies on session instructions and initial history seed."
+        )
 
 
     # DTMF (keypad) Listener for OTP verification

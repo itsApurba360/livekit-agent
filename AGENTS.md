@@ -65,7 +65,7 @@ LIVEKIT_AGENT_NAME=outbound-caller-prod .venv/bin/python web_ui_server.py
 
 The web UI connects to the LiveKit Cloud project and dispatches the hosted cloud worker (`outbound-caller-prod`).
 
-Use the **Mock Outbound** profile to test outbound conversation behavior without placing a PSTN call. It sends `call_direction=outbound` and `outbound_dial_mode=mock`, so the worker keeps outbound prompting and waits for the user to speak first, but skips SIP participant creation.
+Use the **Mock Outbound** profile to test outbound conversation behavior without placing a PSTN call. It sends `call_direction=outbound` and `outbound_dial_mode=mock`, so the worker keeps outbound prompting but skips SIP participant creation.
 
 
 ## Architecture
@@ -119,7 +119,7 @@ Use the **Mock Outbound** profile to test outbound conversation behavior without
 3. `call_api.py` creates the outbound SIP participant using `OUTBOUND_TRUNK_ID` (`ST_...`) with `wait_until_answered=True`.
 4. `call_api.py` records and returns the exact setup result (`answered` or a structured `failed_*` status with raw SIP code/text when available).
 5. `agent.py` receives `outbound_dial_mode="api"`, resolves outbound call context, optionally uses legacy Frappe lookup when configured, waits for the API-created SIP participant to become active, and starts the realtime conversation worker linked to that participant.
-6. After the callee answers and speaks first, the realtime agent responds. Hermes can call `get_phone_call_status(call_id)` or the operator can inspect `/dashboard`.
+6. After the callee answers, the realtime agent runs the conversation from session instructions. Hermes can call `get_phone_call_status(call_id)` or the operator can inspect `/dashboard`.
 7. On disconnect, the worker posts a LiveKit session report; the API stores transcript fields and refreshes Vobiz recording metadata.
 
 ### Data Flow (Google Sheets GST/Document Campaign)
@@ -157,7 +157,7 @@ Use the **Mock Outbound** profile to test outbound conversation behavior without
 ## Important Implementation Notes
 
 - Greeting selection uses `_select_initial_greeting_template` and prefers direction-specific keys.
-- For outbound, the first LLM response is not auto-generated; the agent waits for callee speech.
+- For Gemini 3.1 Live outbound, `session.generate_reply()` is not used for startup speech; the opening line comes from session instructions (and optional initial history seed).
 - `AgentSession` is configured with a short `user_away_timeout`; there is also explicit inactivity monitoring that shuts down after silence.
 - DTMF/OTP, WhatsApp, PDF, and customer-query tools are legacy Frappe surfaces and are not exposed to the model right now.
 - For local browser-only outbound testing, use the web UI **Mock Outbound** profile. This is intentionally not a telephony test: `outbound_dial_mode=mock` dispatches the hosted cloud worker, metadata parsing, prompts, tools, and realtime audio.
@@ -199,10 +199,24 @@ When using `gemini-3.1-flash-live-preview` (which has mutable context = False):
 - **No dynamic turn generation**: `session.generate_reply()` is not supported and will throw `RealtimeError`. Do not call it.
 - **No text say without TTS**: `session.say(text)` requires a separate TTS. Calling it without an attached TTS model raises `RuntimeError` and silent crashes in background tasks.
 - **No mid-session config updates**: Changing system prompt/instructions, chat context, or tools during the call will be ignored by the LiveKit Google realtime plugin. All context must be fully populated at session startup.
-- **Outbound call initiation**: Avoid all python-side active greeting triggers (like silence monitors or startup `say`). Instead, instruct the model in its `system_prompt` with the initial greeting templates, and let it greet the user as soon as the user makes the first utterance.
+- **Outbound call initiation**: Avoid python-side active greeting triggers that 3.1 does not support (`session.generate_reply()`, startup `say` without TTS). Put the opening greeting and purpose in `system_prompt` / campaign prompts at session start so the model can open from instructions (and optional initial history seed).
 
 Docs:
 
 - `docs/hermes-call-control.md` — Call API/Hermes/dashboard/recording contract.
 - `docs/google-sheets-calling-automation.md` — Sheet schema and campaign runbook.
 - `docs/dokploy.md` — deployment metadata and MCP-first redeploy workflow.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live as local markdown under `.scratch/<feature>/`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five-role labels (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context layout: root `CONTEXT.md` + `docs/adr/`. See `docs/agents/domain.md`.

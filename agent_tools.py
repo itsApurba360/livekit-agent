@@ -8,7 +8,6 @@ from livekit.agents import llm
 from call_status_store import update_call_record, get_call_record, list_call_records
 
 logger = logging.getLogger("agent-tools")
-END_CALL_SPEECH_START_TIMEOUT_SECONDS = 3.0
 END_CALL_MAX_SPEECH_SECONDS = 8.0
 CALLBACK_OFFICE_START = dt_time(10, 0)
 CALLBACK_OFFICE_END = dt_time(18, 0)
@@ -92,33 +91,32 @@ CALLBACK_HOLIDAYS_2026 = {
 
 
 async def _wait_for_end_call_speech(session: Optional[Any]) -> None:
+    """Wait only for in-progress farewell speech before hangup.
+
+    Do not wait for a *new* post-tool goodbye: campaign close lines already thank
+    the customer once, and a second wait window causes repeated thanks/bye.
+    """
     if not session or not hasattr(session, "on") or not hasattr(session, "off"):
-        await asyncio.sleep(END_CALL_SPEECH_START_TIMEOUT_SECONDS)
+        await asyncio.sleep(0.3)
         return
 
-    started = asyncio.Event()
+    if getattr(session, "agent_state", None) != "speaking":
+        # Brief grace for audio still draining from the same closing turn.
+        await asyncio.sleep(0.35)
+        if getattr(session, "agent_state", None) != "speaking":
+            return
+
     finished = asyncio.Event()
 
     def on_agent_state_changed(ev):
         state = getattr(ev, "new_state", None)
-        if state == "speaking":
-            started.set()
-        elif started.is_set():
+        if state != "speaking":
             finished.set()
 
     session.on("agent_state_changed", on_agent_state_changed)
-    if getattr(session, "agent_state", None) == "speaking":
-        started.set()
-
     try:
-        try:
-            await asyncio.wait_for(started.wait(), END_CALL_SPEECH_START_TIMEOUT_SECONDS)
-        except asyncio.TimeoutError:
-            return
-
         if getattr(session, "agent_state", None) != "speaking":
             return
-
         try:
             await asyncio.wait_for(finished.wait(), END_CALL_MAX_SPEECH_SECONDS)
         except asyncio.TimeoutError:
@@ -317,6 +315,7 @@ class CustomerQueryTools(llm.ToolContext):
         self.session = session
         self.ctx = ctx
         self.call_id = call_id
+        self._end_call_started = False
 
     @llm.function_tool(description="Get the list and status of sales orders for the current customer.")
     async def get_customer_sales_orders(self, customer_id: Optional[str] = None):
@@ -739,13 +738,34 @@ class CustomerQueryTools(llm.ToolContext):
             logger.error(f"Error in send_text_whatsapp: {e}")
             return f"Error sending WhatsApp message: {str(e)}"
 
-    @llm.function_tool(description="Ends the current call immediately. Call this when the conversation is finished or the user wants to end the call.")
+    @llm.function_tool(
+        description=(
+            "Ends the current call immediately. Call this after you have already said one short "
+            "closing line (e.g. a single 'Thank you') when the conversation is finished or the "
+            "user wants to end. Do not call this tool more than once. After calling it, do not "
+            "speak again — do not repeat thanks, goodbye, or bye."
+        )
+    )
     async def end_call(self):
         """
         """
+        if self._end_call_started:
+            logger.info("Custom end_call ignored: hangup already in progress.")
+            return (
+                "Call hangup is already in progress. Do not speak further. "
+                "Do not say thank you, bye, or goodbye again."
+            )
+
+        self._end_call_started = True
         logger.info("Custom end_call tool executed.")
         ctx = getattr(self, "ctx", None)
         session = getattr(self, "session", None)
+        # Tool result is fed back to the realtime model. Asking for another spoken
+        # goodbye here was causing double "thank you / bye" at hangup.
+        tool_result = (
+            "Call is ending now. Do not speak further. "
+            "Do not say thank you, bye, goodbye, or any other closing line again."
+        )
         if ctx:
             async def perform_shutdown():
                 await _wait_for_end_call_speech(session)
@@ -755,9 +775,9 @@ class CustomerQueryTools(llm.ToolContext):
                     ctx.shutdown(reason="Agent ended call")
                 except Exception as e:
                     logger.warning(f"Error during custom end_call shutdown: {e}")
-            
+
             asyncio.create_task(perform_shutdown())
-            return "Call is ending. Politely say goodbye to the user now in natural, simple spoken language (e.g., 'Thank you' or 'Theek hai, thank you'). Never say the word 'bye'."
+            return tool_result
         elif session:
             async def perform_session_shutdown():
                 await _wait_for_end_call_speech(session)
@@ -766,10 +786,11 @@ class CustomerQueryTools(llm.ToolContext):
                     session.shutdown()
                 except Exception as e:
                     logger.warning(f"Error during session shutdown: {e}")
-            
+
             asyncio.create_task(perform_session_shutdown())
-            return "Call is ending. Politely say goodbye to the user now in natural, simple spoken language (e.g., 'Thank you' or 'Theek hai, thank you'). Never say the word 'bye'."
-            
+            return tool_result
+
+        self._end_call_started = False
         return "Failed to end call: context not available."
 
     @llm.function_tool(description="Record the structured ITR document-collection outcome. Use receipt_status Received, Not Received, or Unclear; promised_date must be DD/MM/YYYY; delivery_mode must be WhatsApp, Email, or Office Visit. A confirmed promised date automatically schedules the next AI follow-up for 11:00 AM IST on the next working day. Record issues before scheduling a human callback.")

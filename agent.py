@@ -345,10 +345,6 @@ async def entrypoint(ctx: agents.JobContext):
         "",
     )
 
-    if gender in {"female", "f", "woman", "girl"}:
-        initial_greeting_template = initial_greeting_template.replace("कैसे हैं आप", "कैसी हैं आप")
-        system_prompt_template = system_prompt_template.replace("कैसे हैं आप", "कैसी हैं आप")
-
     try:
         initial_greeting = initial_greeting_template.format(
             contact_person_name=contact_person_name,
@@ -381,9 +377,9 @@ async def entrypoint(ctx: agents.JobContext):
             if gender:
                 prompt_base += f"\n- Contact Person Gender: '{gender}'."
                 if gender in {"female", "f", "woman", "girl"}:
-                    prompt_base += "\n- Address them respectfully as female (use feminine verbs like 'कैसी हैं आप' or address as 'मैम')."
+                    prompt_base += "\n- Address them respectfully as female (use feminine verb forms; address as 'मैम' when natural)."
                 else:
-                    prompt_base += "\n- Address them respectfully as male (use masculine verbs like 'कैसे हैं आप' or address as 'सर')."
+                    prompt_base += "\n- Address them respectfully as male (use masculine verb forms; address as 'सर' when natural)."
 
         if customer_id:
             prompt_base += f"\n\nThe current outbound campaign row is linked to Customer ID: '{customer_id}'. Customer lookup and WhatsApp/PDF tools are disabled for now; use only campaign outcome, scheduling, or end-call tools."

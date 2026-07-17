@@ -155,3 +155,8 @@ cython_debug/
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# Local Google Drive OAuth secrets
+client_secrets.json
+.google_drive_token.json
+

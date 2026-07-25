@@ -361,10 +361,21 @@ function showFieldMessage(el, message, kind) {
 }
 
 async function loadSettingsModal() {
+  const credsResult = $('credsResult');
   const spreadsheetResult = $('spreadsheetResult');
   const windowResult = $('windowResult');
+  credsResult.style.display = 'none';
   spreadsheetResult.style.display = 'none';
   windowResult.style.display = 'none';
+
+  try {
+    const data = await api('/settings/google-creds');
+    if (data.configured) {
+      showFieldMessage(credsResult, `Configured: ${data.client_email || 'Service Account'} (saved ${data.updated_at ? fmtTime(data.updated_at) : 'active'}).`, 'success');
+    }
+  } catch (err) {
+    // not configured yet
+  }
 
   try {
     const data = await api('/settings/spreadsheet');
@@ -391,6 +402,41 @@ async function loadSettingsModal() {
 $('settingsBtn').addEventListener('click', () => {
   loadSettingsModal();
   $('settingsModal').showModal();
+});
+
+$('credsFileInput').addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (event) => {
+    $('credsJsonText').value = event.target.result;
+  };
+  reader.readAsText(file);
+});
+
+$('credsSaveBtn').addEventListener('click', async () => {
+  const btn = $('credsSaveBtn');
+  const resultEl = $('credsResult');
+  const jsonText = $('credsJsonText').value.trim();
+  if (!jsonText) {
+    showFieldMessage(resultEl, 'Please select a JSON key file or paste the JSON text.', 'error');
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = 'Validating & Saving…';
+  try {
+    const data = await api('/settings/google-creds', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ creds_json: jsonText }),
+    });
+    showFieldMessage(resultEl, data.message || `Credentials saved for ${data.client_email}`, 'success');
+  } catch (err) {
+    showFieldMessage(resultEl, `Failed to save credentials: ${err.message}`, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Save Google Credentials';
+  }
 });
 
 $('spreadsheetSave').addEventListener('click', async () => {

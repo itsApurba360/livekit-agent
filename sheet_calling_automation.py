@@ -170,15 +170,56 @@ def _within_calling_window(now: datetime) -> tuple[bool, str]:
     return False, f"outside window {start_str}-{end_str} IST (now {current_time.strftime('%H:%M')} IST)"
 
 
+def parse_google_creds_info(raw_input: str) -> dict:
+    """Parse Google Service Account JSON or Base64 credentials string safely into a dict."""
+    if not raw_input or not isinstance(raw_input, str):
+        raise ValueError("Credentials string is empty or invalid")
+
+    import json
+    import base64
+
+    cleaned = raw_input.strip().strip("'\"")
+    info = None
+
+    # Strategy 1: Try base64 decode with padding, then json.loads(strict=False)
+    try:
+        padded = cleaned + '=' * (-len(cleaned) % 4)
+        decoded = base64.b64decode(padded).decode('utf-8', errors='ignore')
+        info = json.loads(decoded, strict=False)
+    except Exception:
+        pass
+
+    # Strategy 2: Try direct json.loads(strict=False)
+    if not info or not isinstance(info, dict):
+        try:
+            info = json.loads(cleaned, strict=False)
+        except Exception:
+            pass
+
+    # Strategy 3: Try replacing escaped newlines then json.loads(strict=False)
+    if not info or not isinstance(info, dict):
+        try:
+            info = json.loads(cleaned.replace('\\n', '\n'), strict=False)
+        except Exception:
+            pass
+
+    if not info or not isinstance(info, dict):
+        raise ValueError("Invalid JSON dict or Base64 encoding for Google Service Account credentials")
+
+    if "private_key" in info and isinstance(info["private_key"], str):
+        info["private_key"] = info["private_key"].replace("\\n", "\n")
+
+    return info
+
+
 def get_google_sheets_client(spreadsheet_id_override: str | None = None):
+    from call_status_store import get_setting
     creds_path = os.environ.get("GOOGLE_SHEETS_CREDS_PATH", ".google_sheets_creds.json")
-    creds_json = os.environ.get("GOOGLE_SHEETS_CREDS_JSON")
-    logger.info(f"DEBUG CREDS_JSON: present={bool(creds_json)}, len={len(creds_json) if creds_json else 0}, repr={repr(creds_json[:100]) if creds_json else None}")
+    creds_json = get_setting("google_sheets_creds_json") or os.environ.get("GOOGLE_SHEETS_CREDS_JSON")
 
     if spreadsheet_id_override:
         spreadsheet_id = spreadsheet_id_override
     else:
-        from call_status_store import get_setting
         spreadsheet_id = get_setting("spreadsheet_id") or os.environ.get("GOOGLE_SHEETS_SPREADSHEET_ID")
 
     if not spreadsheet_id:
@@ -190,46 +231,14 @@ def get_google_sheets_client(spreadsheet_id_override: str | None = None):
     ]
     
     if creds_json and creds_json.strip().strip("'\""):
-        import json
-        import base64
-        cleaned = creds_json.strip().strip("'\"")
-        info = None
-        
-        # Strategy 1: Try base64 decode with padding, then json.loads(strict=False)
         try:
-            padded = cleaned + '=' * (-len(cleaned) % 4)
-            decoded = base64.b64decode(padded).decode('utf-8', errors='ignore')
-            info = json.loads(decoded, strict=False)
-        except Exception:
-            pass
-
-        # Strategy 2: Try direct json.loads(strict=False)
-        if not info or not isinstance(info, dict):
-            try:
-                info = json.loads(cleaned, strict=False)
-            except Exception:
-                pass
-
-        # Strategy 3: Try replacing escaped newlines then json.loads(strict=False)
-        if not info or not isinstance(info, dict):
-            try:
-                info = json.loads(cleaned.replace('\\n', '\n'), strict=False)
-            except Exception:
-                pass
-
-        if not info or not isinstance(info, dict):
-            raise ValueError("Failed to parse GOOGLE_SHEETS_CREDS_JSON environment variable: Invalid JSON dict or Base64 encoding")
-
-        if "private_key" in info and isinstance(info["private_key"], str):
-            info["private_key"] = info["private_key"].replace("\\n", "\n")
-
-        try:
+            info = parse_google_creds_info(creds_json)
             creds = Credentials.from_service_account_info(info, scopes=scopes)
         except Exception as e:
-            raise ValueError(f"Failed to create Google credentials from parsed service account info: {e}")
+            raise ValueError(f"Failed to create Google credentials from database or environment setting: {e}")
     else:
         if not os.path.exists(creds_path):
-            raise FileNotFoundError(f"Google credentials file not found at: {creds_path} and GOOGLE_SHEETS_CREDS_JSON env var is not set")
+            raise FileNotFoundError(f"Google credentials not configured. Please save credentials in Dashboard Settings or set GOOGLE_SHEETS_CREDS_JSON / {creds_path}")
         creds = Credentials.from_service_account_file(creds_path, scopes=scopes)
         
     client = gspread.authorize(creds)

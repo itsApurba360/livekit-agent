@@ -290,6 +290,99 @@ def save_spreadsheet_settings(
     }
 
 
+class GoogleCredsRequest(BaseModel):
+    creds_json: str = Field(..., description="Service account JSON content or Base64 string")
+
+
+@app.get("/settings/google-creds")
+def get_google_creds_settings(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+    _require_auth(authorization)
+    from call_status_store import get_setting
+
+    creds_json = get_setting("google_sheets_creds_json") or os.environ.get("GOOGLE_SHEETS_CREDS_JSON")
+    configured = False
+    client_email = None
+
+    if creds_json and creds_json.strip():
+        try:
+            from sheet_calling_automation import parse_google_creds_info
+            info = parse_google_creds_info(creds_json)
+            if info and "client_email" in info:
+                configured = True
+                client_email = info.get("client_email")
+        except Exception:
+            pass
+
+    if not configured and os.path.exists(".google_sheets_creds.json"):
+        try:
+            with open(".google_sheets_creds.json") as f:
+                d = json.load(f)
+                client_email = d.get("client_email")
+                configured = True
+        except Exception:
+            pass
+
+    return {
+        "ok": True,
+        "configured": configured,
+        "client_email": client_email,
+        "updated_at": get_setting("google_creds_updated_at"),
+    }
+
+
+@app.post("/settings/google-creds")
+def save_google_creds_settings(
+    request: GoogleCredsRequest,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    _require_auth(authorization)
+    from sheet_calling_automation import parse_google_creds_info
+    from google.oauth2.service_account import Credentials
+
+    try:
+        info = parse_google_creds_info(request.creds_json)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Invalid credentials format: {e}")
+
+    if not info or not isinstance(info, dict):
+        raise HTTPException(status_code=422, detail="Invalid Google Service Account JSON structure.")
+
+    if "private_key" not in info or "client_email" not in info:
+        raise HTTPException(status_code=422, detail="JSON missing required 'private_key' or 'client_email' fields.")
+
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+    ]
+    try:
+        Credentials.from_service_account_info(info, scopes=scopes)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Failed to create Google credentials: {e}")
+
+    compact_json = json.dumps(info)
+    set_setting("google_sheets_creds_json", compact_json)
+    set_setting("google_creds_updated_at", now_iso())
+
+    try:
+        with open(".google_sheets_creds.json", "w") as f:
+            f.write(compact_json)
+    except Exception:
+        pass
+
+    if os.path.exists(AGENT_ERROR_LOG_PATH):
+        try:
+            os.remove(AGENT_ERROR_LOG_PATH)
+        except Exception:
+            pass
+
+    return {
+        "ok": True,
+        "client_email": info.get("client_email"),
+        "project_id": info.get("project_id"),
+        "message": f"Successfully saved Google Service Account credentials for {info.get('client_email')}",
+    }
+
+
 class CallingWindowRequest(BaseModel):
     enabled: bool
     start: str = Field(..., description="HH:MM, IST")

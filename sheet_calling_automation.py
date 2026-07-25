@@ -191,16 +191,38 @@ def get_google_sheets_client(spreadsheet_id_override: str | None = None):
     if creds_json and creds_json.strip().strip("'\""):
         import json
         import base64
+        cleaned = creds_json.strip().strip("'\"")
+        info = None
+        
+        # Strategy 1: Try base64 decode with padding, then json.loads(strict=False)
         try:
-            cleaned = creds_json.strip().strip("'\"")
+            padded = cleaned + '=' * (-len(cleaned) % 4)
+            decoded = base64.b64decode(padded).decode('utf-8', errors='ignore')
+            info = json.loads(decoded, strict=False)
+        except Exception:
+            pass
+
+        # Strategy 2: Try direct json.loads(strict=False)
+        if not info or not isinstance(info, dict):
             try:
-                decoded = base64.b64decode(cleaned).decode('utf-8')
-                info = json.loads(decoded)
+                info = json.loads(cleaned, strict=False)
             except Exception:
-                info = json.loads(cleaned)
+                pass
+
+        # Strategy 3: Try replacing escaped newlines then json.loads(strict=False)
+        if not info or not isinstance(info, dict):
+            try:
+                info = json.loads(cleaned.replace('\\n', '\n'), strict=False)
+            except Exception:
+                pass
+
+        if not info or not isinstance(info, dict):
+            raise ValueError("Failed to parse GOOGLE_SHEETS_CREDS_JSON environment variable: Invalid JSON dict or Base64 encoding")
+
+        try:
             creds = Credentials.from_service_account_info(info, scopes=scopes)
         except Exception as e:
-            raise ValueError(f"Failed to parse GOOGLE_SHEETS_CREDS_JSON environment variable: {e}")
+            raise ValueError(f"Failed to create Google credentials from parsed service account info: {e}")
     else:
         if not os.path.exists(creds_path):
             raise FileNotFoundError(f"Google credentials file not found at: {creds_path} and GOOGLE_SHEETS_CREDS_JSON env var is not set")

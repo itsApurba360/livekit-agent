@@ -188,14 +188,13 @@ def get_google_sheets_client(spreadsheet_id_override: str | None = None):
         "https://www.googleapis.com/auth/drive"
     ]
     
-    if creds_json:
+    if creds_json and creds_json.strip().strip("'\""):
         import json
         import base64
         try:
-            # Check if it looks like Base64 (alphanumeric, +, /, =), otherwise parse as raw JSON
-            cleaned = creds_json.strip()
+            cleaned = creds_json.strip().strip("'\"")
             try:
-                decoded = base64.b64decode(cleaned, validate=True).decode('utf-8')
+                decoded = base64.b64decode(cleaned).decode('utf-8')
                 info = json.loads(decoded)
             except Exception:
                 info = json.loads(cleaned)

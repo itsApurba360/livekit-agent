@@ -52,6 +52,38 @@ def check_stop_requested() -> bool:
         return True
     return False
 
+def safe_get_all_records(worksheet) -> list[dict]:
+    """Safely fetch all records from a worksheet even if there are duplicate or empty header columns."""
+    try:
+        all_values = worksheet.get_all_values()
+    except Exception as e:
+        logger.error(f"Error fetching worksheet values: {e}")
+        return []
+
+    if not all_values:
+        return []
+
+    raw_headers = [str(h).strip() for h in all_values[0]]
+    headers = []
+    seen = {}
+    for idx, h in enumerate(raw_headers):
+        header_name = h if h else f"col_{idx+1}"
+        if header_name in seen:
+            seen[header_name] += 1
+            headers.append(f"{header_name}_{seen[header_name]}")
+        else:
+            seen[header_name] = 1
+            headers.append(header_name)
+
+    records = []
+    for row in all_values[1:]:
+        record = {}
+        for idx, header_name in enumerate(headers):
+            record[header_name] = row[idx] if idx < len(row) else ""
+        records.append(record)
+    return records
+
+
 def _headers(sheet) -> list[str]:
     return [str(header).strip() for header in sheet.row_values(1)]
 
@@ -359,7 +391,7 @@ def sync_completed_calls_to_sheets(sheet):
     # Backfill recording links for calls already synced to Sheet 2 but missing recording URLs
     sheet2 = sheet.get_worksheet(1)
     try:
-        sheet2_rows = sheet2.get_all_records()
+        sheet2_rows = safe_get_all_records(sheet2)
     except Exception as e:
         logger.error(f"Failed to read Sheet 2 for recording backfill: {e}")
         sheet2_rows = []
@@ -444,7 +476,7 @@ def sync_completed_calls_to_sheets(sheet):
     
     # Pre-cache Sheet 1 records for looking up row index of matching CID
     sheet1_headers = _headers(sheet1)
-    sheet1_rows = sheet1.get_all_records()
+    sheet1_rows = safe_get_all_records(sheet1)
     ist = timezone(timedelta(hours=5, minutes=30))
     now = datetime.now(ist).replace(tzinfo=None)
     
@@ -652,8 +684,8 @@ async def run_sheets_automation(ignore_schedule: bool = False):
     sheet2 = sheet.get_worksheet(1)
     
     try:
-        sheet1_rows = sheet1.get_all_records()
-        sheet2_rows = sheet2.get_all_records()
+        sheet1_rows = safe_get_all_records(sheet1)
+        sheet2_rows = safe_get_all_records(sheet2)
     except Exception as e:
         logger.error(f"Failed to fetch sheets data: {e}")
         try:

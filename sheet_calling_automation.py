@@ -220,6 +220,9 @@ def get_google_sheets_client(spreadsheet_id_override: str | None = None):
         if not info or not isinstance(info, dict):
             raise ValueError("Failed to parse GOOGLE_SHEETS_CREDS_JSON environment variable: Invalid JSON dict or Base64 encoding")
 
+        if "private_key" in info and isinstance(info["private_key"], str):
+            info["private_key"] = info["private_key"].replace("\\n", "\n")
+
         try:
             creds = Credentials.from_service_account_info(info, scopes=scopes)
         except Exception as e:

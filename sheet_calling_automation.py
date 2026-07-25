@@ -173,6 +173,7 @@ def _within_calling_window(now: datetime) -> tuple[bool, str]:
 def get_google_sheets_client(spreadsheet_id_override: str | None = None):
     creds_path = os.environ.get("GOOGLE_SHEETS_CREDS_PATH", ".google_sheets_creds.json")
     creds_json = os.environ.get("GOOGLE_SHEETS_CREDS_JSON")
+    logger.info(f"DEBUG CREDS_JSON: present={bool(creds_json)}, len={len(creds_json) if creds_json else 0}, repr={repr(creds_json[:100]) if creds_json else None}")
 
     if spreadsheet_id_override:
         spreadsheet_id = spreadsheet_id_override

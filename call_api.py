@@ -369,9 +369,9 @@ def save_google_creds_settings(
     except Exception:
         pass
 
-    if os.path.exists(AGENT_ERROR_LOG_PATH):
+    if os.path.exists("agent_error.log"):
         try:
-            os.remove(AGENT_ERROR_LOG_PATH)
+            os.remove("agent_error.log")
         except Exception:
             pass
 
